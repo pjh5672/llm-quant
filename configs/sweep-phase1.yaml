@@ -1,0 +1,24 @@
+# Phase 1: compare bit combinations. Every run goes through the same pipeline as
+# examples/auto_llm.py -- the sweep only expands this one config into N of them.
+defaults:
+  project: phase1-sweep
+  model: meta-llama/Llama-3.2-1B-Instruct
+  device: cuda
+  seq_len: 2048
+  seed: 0
+
+quantization:
+  quantize: true
+  quant_method: rtn
+  mode: fake
+  kv_cache: bf16
+  group_size: 128
+
+evaluation:
+  metric: wikitext2
+
+sweep:
+  attn_weight: [int4, int8]
+  mlp_weight: [int4, int8]
+  head_weight: [bf16, int8]
+  activation: [bf16, int8]

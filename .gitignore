@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.egg-info/
+build/
+results/
+experiments/
+*.log
+csrc/*.exe
+csrc/*.exp
+csrc/*.lib
