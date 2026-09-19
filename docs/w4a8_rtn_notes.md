@@ -244,17 +244,33 @@ sweep:                  # 선택. 있으면 교차곱으로 확장
 - **embed는 축에 없음.** `tie_word_embeddings=true`지만 `FakeQuantLinear.from_linear`가
   새 파라미터를 만들어 **tie를 끊기 때문에** embedding은 bf16으로 남음. `size.py`도 그 전제로 계산함.
 - **미구현 슬롯은 조용히 무시하지 않고 `NotImplementedError`를 냄** (`pack`, `load_packed`,
-  `mode=real/kernel`, `quant_method != rtn`, `kv_cache != bf16`). "설정했는데 아무 일도
-  안 일어나는" 상태를 만들지 않기 위함.
+  `mode=real/kernel`, `quant_method != rtn`). "설정했는데 아무 일도 안 일어나는"
+  상태를 만들지 않기 위함.
 
-### kv_cache가 미구현인 이유
-1. Linear 경로가 아니라 **attention 경로**를 건드림. transformers `Cache`를 상속해 K/V 저장을
-   가로채야 하고, "양자화하지 않는다"고 정한 attention BMM에 영향이 감.
-2. **현재 PPL 지표로는 효과가 0.** `evaluate_ppl`은 2048 토큰 청크마다 `model(batch)`를
-   한 번씩만 돌려서 캐시가 쓰이기만 하고 **다음 스텝에서 읽히지 않음.** K/V를 아무리
-   양자화해도 PPL이 그대로임. 효과를 보려면 생성 기반 지표(Phase 5)가 따로 필요함.
+### kv_cache (2026-09-19 구현됨)
+전에는 "PPL로는 효과가 0이라" 미뤘었다. **정확도 지표를 생성 태스크로 바꾸면서 측정이 가능해졌다** —
+`evaluate_ppl`은 청크마다 forward 한 번이라 캐시를 되읽지 않지만, 생성 태스크는 디코드 루프를 돈다.
 
-→ 스키마 고정을 위해 슬롯만 두고, 구현과 전용 pass 조건은 Phase 5 근처로 미룸.
+**구현**: `stages/s1_fake/fake_quant_cache.py::FakeQuantCache` — `DynamicCache`를 상속해
+K/V를 쓰는 시점에 fake quant한다. `generate(past_key_values=...)`로 주입.
+
+- **그룹은 head_dim(64)이다. weight의 group_size 128을 쓸 수 없다** — 그룹이 축보다 클 수 없다.
+  KV 양자화의 표준 granularity(토큰별·헤드별)와도 일치한다.
+- **이미 캐시에 있는 토큰은 다시 양자화하지 않는다.** 재양자화하면 스텝마다 오차가 누적된다.
+
+**비용은 디스크가 아니라 컨텍스트에 비례한다** (Llama-3.2-1B, `decode_bytes_at_context`):
+
+| kv dtype | KV KB/token | ctx 2k | ctx 8k | ctx 32k |
+|---|---|---|---|---|
+| bf16 | 32.0 | 1.486 GB | 1.674 GB | 2.424 GB |
+| int8 | 17.0 | 1.457 GB | 1.557 GB | 1.955 GB |
+| int4 | 9.0 | 1.442 GB | 1.494 GB | **1.705 GB** |
+
+디스크 크기는 **전혀 안 변한다**(캐시는 저장 대상이 아님). 2k에서는 weight가 지배해서 이득이 3%뿐이고,
+32k에서 30%가 된다. 그래서 점수의 decode 항은 `context_tokens`(기본 2048) 기준으로 계산한다.
+
+**정확도 실측** (ARC-Easy n=200, attn·mlp int8): bf16 0.565 / int8 0.585 / **int4 0.430**.
+int8은 사실상 무료, **int4는 −13.5%p로 못 쓴다.**
 
 ## 프로젝트 구조
 

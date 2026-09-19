@@ -186,8 +186,9 @@ def build_config(argv=None, root_dir: Path | None = None) -> RunConfig:
 def expand_sweep(config: RunConfig) -> list[RunConfig]:
     """Cross product of the `sweep:` grid, as full RunConfigs sharing everything else.
 
-    Combinations that resolve to the same set of schemes are collapsed: once every weight
-    target is bf16 the activation dtype has nothing to act on, so those runs are identical.
+    Combinations that resolve to the same schemes *and* the same KV cache are collapsed:
+    once every weight target is bf16 the activation dtype has nothing to act on, so those
+    runs would be identical.
     """
     if not config.sweep:
         return [config]
@@ -196,7 +197,12 @@ def expand_sweep(config: RunConfig) -> list[RunConfig]:
     runs, seen = [], set()
     for combo in itertools.product(*(config.sweep[k] for k in keys)):
         quant = replace(config.quant, **dict(zip(keys, combo)))
-        key = tuple(quant.scheme(t) for t in ("attn_weight", "mlp_weight", "head_weight"))
+        # the KV cache is not part of any weight scheme, so it has to join the key
+        # explicitly or every cache dtype would collapse into one run
+        key = (
+            *(quant.scheme(t) for t in ("attn_weight", "mlp_weight", "head_weight")),
+            quant.kv_cache_bits,
+        )
         if key in seen:
             continue
         seen.add(key)

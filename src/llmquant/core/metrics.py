@@ -13,6 +13,11 @@ lm_head is where they disagree. With tie_word_embeddings the embedding and lm_he
 tensor; quantizing lm_head breaks the tie and *adds* a second copy, so disk grows. But decode
 reads lm_head in full every token while the embedding is a row lookup, so the same change
 *shrinks* decode traffic.
+
+The KV cache is the fourth number and behaves differently again: it costs nothing on disk,
+but decode re-reads the whole cache every step, so its share of decode traffic grows with the
+context length. At short context the weights dominate and quantizing the cache buys almost
+nothing; past a few thousand tokens it becomes the larger term.
 """
 
 import torch.nn as nn
@@ -102,11 +107,38 @@ def model_metrics(model: nn.Module, recipe: QuantizationModifier | None) -> dict
     else:
         disk += head_bytes + embed.weight.numel() * BF16_BYTES
 
+    kv_bits = recipe.kv_cache_bits if recipe else None
     return {
         "deployed_bytes": disk,
         "decode_bytes_per_token": decode,
         "bits_per_element": weighted_bits / elements,
+        "kv_bytes_per_token": kv_cache_bytes_per_token(model, kv_bits),
     }
+
+
+def kv_cache_bytes_per_token(model, num_bits: int | None, group_size: int | None = None) -> int:
+    """Bytes the KV cache costs per token of context, for one sequence.
+
+    Keys and values, every layer, every KV head. The group is the head dimension: KV
+    quantization is per token and per head, and head_dim (64 here) is smaller than the
+    weight group size (128), so the weight grouping cannot be reused.
+    """
+    config = model.config
+    layers = config.num_hidden_layers
+    kv_heads = getattr(config, "num_key_value_heads", config.num_attention_heads)
+    head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+    elements = 2 * layers * kv_heads * head_dim  # 2 = keys and values
+
+    if num_bits is None:
+        return elements * BF16_BYTES
+    group = min(group_size or head_dim, head_dim)
+    scales = 2 * layers * kv_heads * (head_dim // group)
+    return elements * num_bits // 8 + scales * SCALE_BYTES
+
+
+def decode_bytes_at_context(metrics: dict, context_tokens: int) -> int:
+    """Weights read every step, plus the whole KV cache re-read every step."""
+    return metrics["decode_bytes_per_token"] + context_tokens * metrics["kv_bytes_per_token"]
 
 
 def estimate_deployed_bytes(model: nn.Module, recipe: QuantizationModifier | None) -> int:

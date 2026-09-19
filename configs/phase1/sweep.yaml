@@ -18,7 +18,7 @@ evaluation:
   # accuracy = generation tasks. The model writes tokens and they are matched against
   # known answers, so this is an absolute score on the real decode path.
   tasks: [arc_easy, arc_challenge, openbookqa]
-  task_limit: null        # null uses each task default (arc 500, openbookqa 500, gsm8k 100)
+  task_limit: 300         # 300 keeps a 24-run grid near an hour; null uses each task default
   ppl: true               # secondary: cheap and comparable, but teacher-forced
   metric: wikitext2
   # TTFT/TPS measured on the fake-quant path cannot separate the combinations: every one
@@ -32,6 +32,9 @@ evaluation:
   max_new_tokens: 64
 
 selection:
+  # decode traffic is weights plus the whole KV cache, so it depends on the context length
+  # you care about. At 2k the weights dominate; past a few thousand the cache does.
+  context_tokens: 2048
   acc_drop_limit_pct: 5.0
   accuracy_weight: 1.0
   bpv_weight: 2.0
@@ -41,5 +44,8 @@ selection:
 sweep:
   attn_weight: [int4, int8]
   mlp_weight: [int4, int8]
-  head_weight: [bf16, int8]
   activation: [bf16, int8]
+  kv_cache: [bf16, int8, int4]
+  # head_weight is held at bf16: three independent sweeps put its accuracy effect at ~0,
+  # and its real trade-off (disk +252MB vs decode -262MB per token) is already known
+  # analytically. Add it back here if that trade-off needs re-measuring.

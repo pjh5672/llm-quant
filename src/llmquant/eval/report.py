@@ -8,7 +8,7 @@ the decision needs all of them at once: a combination can be cheap in bits, neut
 decode traffic and still lose accuracy, and each of those lives in a different column.
 """
 
-DTYPE_AXES = ("attn_weight", "mlp_weight", "head_weight", "activation")
+DTYPE_AXES = ("attn_weight", "mlp_weight", "head_weight", "activation", "kv_cache")
 
 FAKE_MODE_WARNING = (
     "  note: TTFT/TPS come from the fake-quant path, where weights are stored dequantized in\n"
@@ -23,12 +23,13 @@ def _fmt(value, spec, blank="-"):
 
 
 def _label(row):
-    return " ".join(f"{row[a]:<5}" for a in DTYPE_AXES)
+    return " ".join(f'{row.get(a, "bf16"):<5}' for a in DTYPE_AXES)
 
 
 def _header():
+    short = {"activation": "act", "kv_cache": "kv"}
     return " ".join(
-        f"{a.replace('_weight', '').replace('activation', 'act'):<5}" for a in DTYPE_AXES
+        f"{short.get(a, a.replace('_weight', '')):<5}" for a in DTYPE_AXES
     )
 
 
@@ -44,7 +45,8 @@ def _headline(summary, out):
     header = f"{'':<5}{_header()}  {'mean acc' if has_task else 'accuracy':>9} {'dacc%':>7}"
     if has_ppl:
         header += f" {'PPL':>9} {'dPPL%':>7}"
-    header += f" {'BPV':>6} {'dec GB/t':>9} {'proj':>6}"
+    context = summary.get("context_tokens", 2048)
+    header += f" {'BPV':>6} {'kv KB/t':>8} {'dec@' + str(context // 1024) + 'k':>8} {'proj':>6}"
     if has_latency:
         header += f" {'TTFT ms':>8} {'TPS':>7}"
     header += f" {'score':>8}  lim"
@@ -60,9 +62,11 @@ def _headline(summary, out):
         )
         if has_ppl:
             line += f" {_fmt(r.get('ppl'), '9.4f')} {_fmt(r.get('ppl_increase_pct'), '+7.2f')}"
+        kv_kb = r.get("kv_gb_per_1k_context")
         line += (
             f" {_fmt(r.get('bits_per_element'), '6.2f')} "
-            f"{_fmt(r.get('decode_gb_per_token'), '9.4f')} "
+            f"{_fmt(kv_kb * 1024 if kv_kb is not None else None, '8.1f')} "
+            f"{_fmt(r.get('decode_gb_at_context'), '8.4f')} "
             f"{(_fmt(projected, '5.2f') + 'x') if projected else '     -'}"
         )
         if has_latency:
@@ -71,7 +75,11 @@ def _headline(summary, out):
         out.append(line)
 
     out.append("  dacc% = accuracy lost vs bf16 on the generation tasks; PPL is secondary")
-    out.append("  proj  = decode speedup implied by the traffic, which is what decode is bound by")
+    out.append(
+        f"  dec@{context // 1024}k = weights + the whole KV cache re-read every step at "
+        f"{context} tokens of context;"
+    )
+    out.append("  proj  = the decode speedup that implies, since decode is memory bound")
     if has_latency:
         out.append(FAKE_MODE_WARNING)
 
@@ -146,7 +154,7 @@ def _selection(summary, out):
         out.append(
             f"  best: {b['name']}  acc {b['acc_cost_pct']:+.2f}%  "
             f"BPV {_fmt(b.get('bits_per_element'), '.2f')}  "
-            f"decode {_fmt(b.get('decode_gb_per_token'), '.4f')} GB/token  "
+            f"decode {_fmt(b.get('decode_gb_at_context'), '.4f')} GB/token  "
             f"score {_fmt(b.get('score'), '.2f')}"
         )
         out.append(f"  {sel['n_within_limit']} of {summary['n_runs']} runs are within the limit")
@@ -163,7 +171,7 @@ def _selection(summary, out):
             out.append(
                 f"  {_fmt(r.get('score'), '8.2f')}  {r['acc_cost_pct']:>+7.2f} "
                 f"{_fmt(r.get('bits_per_element'), '6.2f')} "
-                f"{_fmt(r.get('decode_gb_per_token'), '9.4f')}  {r['name']}"
+                f"{_fmt(r.get('decode_gb_at_context'), '9.4f')}  {r['name']}"
             )
         if any(r.get("score_missing") for r in sel["ranked"]):
             out.append("  (rows missing a metric scored on what they had)")
@@ -171,10 +179,11 @@ def _selection(summary, out):
 
 def _structure(summary, out):
     out.append("")
-    out.append("== pareto front (nothing is both cheaper to decode and more accurate) ==")
+    context = summary.get("context_tokens", 2048)
+    out.append(f"== pareto front at {context} tokens of context ==")
     for r in summary["pareto_front"]:
         out.append(
-            f"  {r['decode_gb_per_token']:>7.4f} GB/token  {r['acc_cost_pct']:>+7.2f}%  {r['name']}"
+            f"  {r['decode_gb_at_context']:>7.4f} GB/token  {r['acc_cost_pct']:>+7.2f}%  {r['name']}"
         )
 
     out.append("")

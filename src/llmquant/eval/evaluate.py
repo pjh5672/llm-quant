@@ -79,7 +79,7 @@ def evaluate_lambada(model, tokenizer, examples, batch_size: int = 8) -> float:
 
 
 @torch.no_grad()
-def greedy_continuations(model, tokenizer, prompts, max_new_tokens: int = 64):
+def greedy_continuations(model, tokenizer, prompts, max_new_tokens: int = 64, cache_factory=None):
     """Greedy chat-formatted continuations, as lists of generated token ids.
 
     This is the only evaluation here that runs the decode loop and the KV cache; PPL and
@@ -95,6 +95,7 @@ def greedy_continuations(model, tokenizer, prompts, max_new_tokens: int = 64):
         generated = model.generate(
             **inputs, max_new_tokens=max_new_tokens, do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
+            **({"past_key_values": cache_factory()} if cache_factory else {}),
         )
         out.append(generated[0, inputs["input_ids"].shape[1] :].tolist())
     return out
@@ -130,7 +131,9 @@ def generation_agreement(reference, candidate) -> dict:
 
 
 @torch.no_grad()
-def evaluate_generation_task(model, tokenizer, examples, score, max_new_tokens: int) -> float:
+def evaluate_generation_task(
+    model, tokenizer, examples, score, max_new_tokens: int, cache_factory=None
+) -> float:
     """Accuracy of generated answers against known ones.
 
     The model writes tokens and they are matched, so this is an absolute score on the real
@@ -152,6 +155,7 @@ def evaluate_generation_task(model, tokenizer, examples, score, max_new_tokens: 
             max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
+            **({"past_key_values": cache_factory()} if cache_factory else {}),
         )
         text = tokenizer.decode(
             generated[0, inputs["input_ids"].shape[1] :], skip_special_tokens=True
@@ -161,7 +165,10 @@ def evaluate_generation_task(model, tokenizer, examples, score, max_new_tokens: 
 
 
 @torch.no_grad()
-def measure_latency(model, tokenizer, prompt_tokens: int = 512, new_tokens: int = 64, iters: int = 3):
+def measure_latency(
+    model, tokenizer, prompt_tokens: int = 512, new_tokens: int = 64, iters: int = 3,
+    cache_factory=None,
+):
     """Prefill TTFT and steady-state decode throughput, measured separately.
 
     They live in different regimes and a quantization choice can help one and not the
@@ -186,6 +193,7 @@ def measure_latency(model, tokenizer, prompt_tokens: int = 512, new_tokens: int 
             min_new_tokens=n,  # keep every iteration the same length
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
+            **({"past_key_values": cache_factory()} if cache_factory else {}),
         )
         torch.cuda.synchronize()
         return time.perf_counter() - start

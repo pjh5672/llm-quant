@@ -80,11 +80,7 @@ class QuantConfig:
                 f"activation={self.activation!r}: activations support only "
                 f"{list(ACTIVATION_DTYPES)}; see docs/w4a8_rtn_notes.md."
             )
-        if normalize_dtype(self.kv_cache) != BF16:
-            raise NotImplementedError(
-                f"kv_cache={self.kv_cache!r}: KV cache quantization is not implemented yet. "
-                "The config slot exists so the schema is stable; see docs/w4a8_rtn_notes.md."
-            )
+
 
     def scheme(self, target: str) -> QuantizationScheme | None:
         """Scheme for one weight target, or None to leave it bf16.
@@ -100,12 +96,22 @@ class QuantConfig:
         activations = dtype_to_args(self.activation, self.group_size, dynamic=True)
         return QuantizationScheme(weights=weights, input_activations=activations)
 
+    @property
+    def kv_cache_bits(self) -> int | None:
+        """Bit width for the KV cache, or None to keep it in bf16.
+
+        Not part of a QuantizationScheme: the cache is grouped per token and per head, so
+        its group is head_dim (64 here), which is smaller than the weight group size (128).
+        """
+        return DTYPE_BITS[normalize_dtype(self.kv_cache)]
+
     def to_modifier(self, mode: str = "fake") -> QuantizationModifier:
         return QuantizationModifier(
             scheme=None,  # every Linear is covered by the attn / mlp / lm_head targets
             attn_scheme=self.scheme("attn_weight"),
             mlp_scheme=self.scheme("mlp_weight"),
             lm_head_scheme=self.scheme("head_weight"),
+            kv_cache_bits=self.kv_cache_bits,
             mode=mode,
         )
 

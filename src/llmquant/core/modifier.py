@@ -40,6 +40,9 @@ class QuantizationModifier:
     mode: str = "fake"
     attn_scheme: str | QuantizationScheme | None = None  # overrides `scheme` for self_attn
     mlp_scheme: str | QuantizationScheme | None = None  # overrides `scheme` for mlp
+    # KV cache bit width, already resolved; None keeps the cache in bf16. Not a scheme:
+    # the cache is grouped by head_dim, not by the weight group size.
+    kv_cache_bits: int | None = None
 
     def scheme_for(self, name: str) -> QuantizationScheme | None:
         """Scheme that applies to the Linear called `name`, or None to keep it bf16."""

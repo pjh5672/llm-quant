@@ -28,6 +28,7 @@ from llmquant.core.datasets import get_eval_ids, get_generation_task
 from llmquant.core.metrics import model_metrics
 from llmquant.core.model import load_pretrained
 from llmquant.core.oneshot import oneshot
+from llmquant.stages.s1_fake import make_cache_factory
 from llmquant.eval.evaluate import (
     evaluate_generation_task,
     evaluate_lambada,
@@ -75,6 +76,10 @@ def run_one(config) -> dict:
         oneshot(model, recipe)
 
     quant = _applied(config)
+    # the KV cache is quantized at generation time, not by rewiring the model, so it only
+    # shows up in the generation tasks -- which is exactly why accuracy moved off PPL,
+    # since a PPL pass never reads the cache back
+    cache_factory = make_cache_factory(quant.kv_cache_bits if config.quantize else None)
     started = time.time()
     row = {
         "name": quant.describe() if config.quantize else "bf16",
@@ -83,7 +88,9 @@ def run_one(config) -> dict:
         "mlp_weight": normalize_dtype(quant.mlp_weight),
         "head_weight": normalize_dtype(quant.head_weight),
         "activation": normalize_dtype(quant.activation),
+        "kv_cache": normalize_dtype(quant.kv_cache),
         "group_size": quant.group_size,
+        "kv_gb_per_1k_context": cost["kv_bytes_per_token"] * 1024 / GB,
         "size_gb": cost["deployed_bytes"] / GB,
         "decode_gb_per_token": cost["decode_bytes_per_token"] / GB,
         "bits_per_element": cost["bits_per_element"],
@@ -93,7 +100,7 @@ def run_one(config) -> dict:
     for name in config.tasks:
         examples, spec = task_examples(name, config.task_limit)
         accuracies[name] = evaluate_generation_task(
-            model, tokenizer, list(examples), spec["score"], spec["max_new_tokens"]
+            model, tokenizer, list(examples), spec["score"], spec["max_new_tokens"], cache_factory
         )
     if accuracies:
         row["task_acc"] = accuracies
@@ -110,6 +117,7 @@ def run_one(config) -> dict:
                 tokenizer,
                 prompt_tokens=config.latency_prompt_tokens,
                 new_tokens=config.latency_new_tokens,
+                cache_factory=cache_factory,
             )
         )
 
@@ -131,6 +139,7 @@ def run_generation(config, reference=None):
     recipe = config.to_modifier()
     if recipe is not None:
         oneshot(model, recipe)
+    cache_factory = make_cache_factory(config.quant.kv_cache_bits if config.quantize else None)
 
     started = time.time()
     metrics = {
@@ -138,7 +147,9 @@ def run_generation(config, reference=None):
             model, tokenizer, list(lambada_examples(config.lambada_limit))
         )
     }
-    continuations = greedy_continuations(model, tokenizer, GENERATION_PROMPTS, config.max_new_tokens)
+    continuations = greedy_continuations(
+        model, tokenizer, GENERATION_PROMPTS, config.max_new_tokens, cache_factory
+    )
     if reference is not None:
         metrics.update(generation_agreement(reference, continuations))
     metrics["generation_sec"] = time.time() - started

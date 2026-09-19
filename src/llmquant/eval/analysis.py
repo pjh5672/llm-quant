@@ -13,7 +13,7 @@ returns plain dicts, so re-analysing needs no GPU and no model.
 import itertools
 from collections import defaultdict
 
-DTYPE_AXES = ("attn_weight", "mlp_weight", "head_weight", "activation")
+DTYPE_AXES = ("attn_weight", "mlp_weight", "head_weight", "activation", "kv_cache")
 NUMERIC_AXES = ("group_size",)
 AXES = DTYPE_AXES + NUMERIC_AXES
 
@@ -26,7 +26,7 @@ def _quantized(rows):
 
 
 def _context(row, exclude):
-    return tuple(row[a] for a in AXES if a != exclude)
+    return tuple(row.get(a, "bf16") for a in AXES if a != exclude)
 
 
 def _ordered_values(axis, values):
@@ -40,7 +40,7 @@ def baseline_row(rows):
     unquantized = [r for r in rows if not r.get("quantize", True)]
     if unquantized:
         return unquantized[0]
-    all_bf16 = [r for r in rows if all(r.get(a) == "bf16" for a in DTYPE_AXES)]
+    all_bf16 = [r for r in rows if all(r.get(a, "bf16") == "bf16" for a in DTYPE_AXES)]
     return (all_bf16 or rows or [None])[0]
 
 
@@ -68,9 +68,19 @@ def annotate(rows, selection=None):
         r["within_limit"] = limit is None or r["acc_cost_pct"] <= limit
         if base and "ppl" in r and base.get("ppl"):
             r["ppl_increase_pct"] = (r["ppl"] / base["ppl"] - 1) * 100
-        if base and base.get("decode_gb_per_token") and r.get("decode_gb_per_token"):
+        if r.get("decode_gb_per_token") is not None:
+            # decode re-reads the whole KV cache every step, so its share grows with the
+            # context; the weights alone would make a quantized cache look free
+            context = getattr(selection, "context_tokens", 2048) if selection else 2048
+            r["context_tokens"] = context
+            r["decode_gb_at_context"] = r["decode_gb_per_token"] + (
+                context / 1024 * r.get("kv_gb_per_1k_context", 0.0)
+            )
+        if base and base.get("decode_gb_at_context") and r.get("decode_gb_at_context"):
             # decode is memory bound, so throughput tracks the bytes read per token
-            r["decode_speedup_projected"] = base["decode_gb_per_token"] / r["decode_gb_per_token"]
+            r["decode_speedup_projected"] = (
+                base["decode_gb_at_context"] / r["decode_gb_at_context"]
+            )
         if base and base.get("decode_tps") and r.get("decode_tps"):
             r["decode_speedup_measured"] = r["decode_tps"] / base["decode_tps"]
     return rows
@@ -81,7 +91,7 @@ def score_rows(rows, selection):
     base = baseline_row(rows)
     weights = {
         "bits_per_element": selection.bpv_weight,
-        "decode_gb_per_token": selection.decode_speed_weight,
+        "decode_gb_at_context": selection.decode_speed_weight,
         "ttft_ms": selection.prefill_speed_weight,
     }
     for r in rows:
@@ -98,7 +108,7 @@ def score_rows(rows, selection):
     return rows
 
 
-def pareto_front(rows, cost_key="decode_gb_per_token"):
+def pareto_front(rows, cost_key="decode_gb_at_context"):
     """Rows nothing else dominates on (cost, accuracy loss)."""
     usable = [r for r in rows if r.get(cost_key) is not None]
     front = []
@@ -125,8 +135,8 @@ def reference_row(rows):
     grid = _quantized(rows)
     if not grid:
         return None
-    best = {a: _ordered_values(a, {r[a] for r in grid})[0] for a in DTYPE_AXES}
-    matches = [r for r in grid if all(r[a] == best[a] for a in DTYPE_AXES)]
+    best = {a: _ordered_values(a, {r.get(a, "bf16") for r in grid})[0] for a in DTYPE_AXES}
+    matches = [r for r in grid if all(r.get(a, "bf16") == best[a] for a in DTYPE_AXES)]
     return min(matches, key=lambda r: r["acc_cost_pct"]) if matches else None
 
 
@@ -140,7 +150,7 @@ def axis_effects(rows):
     for axis in AXES:
         by_context = defaultdict(dict)
         for r in rows:
-            by_context[_context(r, axis)][r[axis]] = r
+            by_context[_context(r, axis)][r.get(axis, "bf16")] = r
         pairs = defaultdict(list)
         for context in by_context.values():
             values = _ordered_values(axis, context)
@@ -150,8 +160,8 @@ def axis_effects(rows):
                     {
                         "acc": b["acc_cost_pct"] - a["acc_cost_pct"],
                         "bpv": (b.get("bits_per_element") or 0) - (a.get("bits_per_element") or 0),
-                        "decode": (b.get("decode_gb_per_token") or 0)
-                        - (a.get("decode_gb_per_token") or 0),
+                        "decode": (b.get("decode_gb_at_context") or 0)
+                        - (a.get("decode_gb_at_context") or 0),
                     }
                 )
         for (hi, lo), samples in sorted(pairs.items()):
@@ -182,16 +192,18 @@ def interactions(rows):
 
     singles = {}
     for r in _quantized(rows):
-        changed = [a for a in DTYPE_AXES if r[a] != ref[a]]
+        changed = [a for a in DTYPE_AXES if r.get(a, "bf16") != ref.get(a, "bf16")]
         if len(changed) == 1:
-            singles[(changed[0], r[changed[0]])] = r["acc_cost_pct"] - ref["acc_cost_pct"]
+            singles[(changed[0], r.get(changed[0], "bf16"))] = (
+                r["acc_cost_pct"] - ref["acc_cost_pct"]
+            )
 
     out = []
     for r in _quantized(rows):
-        changed = [a for a in DTYPE_AXES if r[a] != ref[a]]
+        changed = [a for a in DTYPE_AXES if r.get(a, "bf16") != ref.get(a, "bf16")]
         if len(changed) < 2:
             continue
-        parts = [singles.get((a, r[a])) for a in changed]
+        parts = [singles.get((a, r.get(a, "bf16"))) for a in changed]
         if any(p is None for p in parts):
             continue
         predicted = sum(parts)
@@ -243,6 +255,7 @@ def summarize(rows, selection):
         "pareto_front": pareto_front(rows),
         "axis_effects": axis_effects(rows),
         "interactions": interactions(rows),
+        "context_tokens": getattr(selection, "context_tokens", 2048),
         "weights": {
             "accuracy": selection.accuracy_weight,
             "bpv": selection.bpv_weight,

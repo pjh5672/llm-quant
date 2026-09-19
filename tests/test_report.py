@@ -41,7 +41,8 @@ def summary():
 def test_headline_table_carries_every_decision_column(summary):
     text = format_report(summary)
     header = text.splitlines()[0]
-    for column in ("mean acc", "dacc%", "BPV", "dec GB/t", "proj", "TTFT ms", "TPS", "score"):
+    for column in ("mean acc", "dacc%", "PPL", "BPV", "kv KB/t", "dec@", "proj",
+                   "TTFT ms", "TPS", "score"):
         assert column in header, column
 
 
@@ -65,7 +66,7 @@ def test_latency_columns_are_absent_when_not_measured(summary):
     header = text.splitlines()[0]
     assert "TTFT" not in header and "TPS" not in header
     assert "fake-quant path" not in text  # nothing measured, so nothing to warn about
-    assert "BPV" in header and "dec GB/t" in header
+    assert "BPV" in header and "dec@" in header and "kv KB/t" in header
 
 
 def test_missing_metrics_render_as_blanks_not_crashes():
@@ -86,3 +87,14 @@ def test_missing_metrics_render_as_blanks_not_crashes():
 def test_weights_are_printed_so_a_ranking_can_be_reproduced(summary):
     text = format_report(summary)
     assert "bpv=2.0" in text and "decode_speed=2.0" in text
+
+
+def test_kv_cache_is_an_axis_and_its_traffic_is_shown(summary):
+    for r in summary["results"]:
+        r["kv_cache"] = "int8" if r["quantize"] else "bf16"
+        r["kv_gb_per_1k_context"] = 0.017 if r["quantize"] else 0.032
+    text = format_report(summary)
+    assert "kv   " in text.splitlines()[0]  # the axis column
+    assert "kv KB/t" in text.splitlines()[0]  # its traffic
+    # the decode column is labelled with the context it was evaluated at
+    assert "dec@2k" in text.splitlines()[0]

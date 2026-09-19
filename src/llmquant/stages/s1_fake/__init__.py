@@ -5,6 +5,7 @@ weight is dequantized once at load, so the forward is a plain bf16 matmul; that 
 timing this stage says nothing about deployed speed (see docs, "속도 측정").
 """
 
+from llmquant.stages.s1_fake.fake_quant_cache import FakeQuantCache, make_cache_factory
 from llmquant.stages.s1_fake.fake_quant_linear import FakeQuantLinear
 
-__all__ = ["FakeQuantLinear"]
+__all__ = ["FakeQuantCache", "FakeQuantLinear", "make_cache_factory"]

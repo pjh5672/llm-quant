@@ -9,11 +9,22 @@ from llmquant.core.metrics import BF16_BITS, bits_per_element, model_metrics
 GROUP = 128
 
 
+class TinyConfig:
+    """Only the fields the KV cache sizing reads."""
+
+    num_hidden_layers = 2
+    num_attention_heads = 4
+    num_key_value_heads = 2
+    hidden_size = GROUP
+    head_dim = 32
+
+
 class TinyLlama(nn.Module):
     """Names mirror Llama so the attn / mlp patterns match; lm_head is tied to the embedding."""
 
     def __init__(self, tied=True):
         super().__init__()
+        self.config = TinyConfig()
         self.model = nn.Module()
         self.model.layers = nn.ModuleList([nn.Module()])
         layer = self.model.layers[0]
@@ -73,3 +84,30 @@ def test_untied_model_counts_the_embedding_once():
     untied = model_metrics(TinyLlama(tied=False), None)
     tied = model_metrics(TinyLlama(tied=True), None)
     assert untied["deployed_bytes"] > tied["deployed_bytes"]
+
+
+@pytest.mark.parametrize(
+    "bits,expected_ratio",
+    [(None, 1.0), (8, 0.5), (4, 0.25)],
+)
+def test_kv_cache_bytes_scale_with_the_bit_width(bits, expected_ratio):
+    from llmquant.core.metrics import kv_cache_bytes_per_token
+
+    model = TinyLlama()
+    reference = kv_cache_bytes_per_token(model, None)
+    got = kv_cache_bytes_per_token(model, bits)
+    # int8/int4 also carry one fp32 scale per head per token, so they land slightly above
+    assert got >= reference * expected_ratio
+    assert got <= reference * expected_ratio * 1.3
+
+
+def test_kv_cache_costs_nothing_on_disk_but_grows_decode_with_context():
+    from llmquant.core.metrics import decode_bytes_at_context
+
+    bf16 = model_metrics(TinyLlama(), QuantConfig(attn_weight="int8", kv_cache="bf16").to_modifier())
+    int4 = model_metrics(TinyLlama(), QuantConfig(attn_weight="int8", kv_cache="int4").to_modifier())
+    assert bf16["deployed_bytes"] == int4["deployed_bytes"]  # the cache is not stored
+    assert int4["kv_bytes_per_token"] < bf16["kv_bytes_per_token"]
+    # at zero context the cache costs nothing; the gap opens as context grows
+    assert decode_bytes_at_context(bf16, 0) == decode_bytes_at_context(int4, 0)
+    assert decode_bytes_at_context(int4, 8192) < decode_bytes_at_context(bf16, 8192)

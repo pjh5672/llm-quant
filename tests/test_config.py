@@ -43,10 +43,19 @@ def test_weight_only_leaves_activation_unquantized():
     assert scheme.weights.num_bits == 4 and scheme.input_activations is None
 
 
-def test_kv_cache_slot_exists_but_is_not_implemented():
-    assert QuantConfig(kv_cache=BF16).kv_cache == BF16
-    with pytest.raises(NotImplementedError, match="not implemented yet"):
-        QuantConfig(attn_weight="int4", kv_cache="int8")
+@pytest.mark.parametrize("dtype,bits", [(BF16, None), ("int8", 8), ("int4", 4)])
+def test_kv_cache_resolves_to_a_bit_width(dtype, bits):
+    cfg = QuantConfig(attn_weight="int4", kv_cache=dtype)
+    assert cfg.kv_cache_bits == bits
+    assert cfg.to_modifier().kv_cache_bits == bits
+
+
+def test_kv_cache_is_not_part_of_a_weight_scheme():
+    # the cache is grouped by head_dim, not by the weight group size, so it cannot ride
+    # along in a QuantizationScheme
+    cfg = QuantConfig(attn_weight="int4", kv_cache="int8")
+    assert cfg.scheme("attn_weight").weights.group_size == cfg.group_size
+    assert "kv" not in str(cfg.scheme("attn_weight"))
 
 
 def test_rejects_bad_group_size():
