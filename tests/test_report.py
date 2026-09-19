@@ -49,11 +49,23 @@ def test_latency_rows_carry_the_fake_mode_warning(summary):
     assert "fake-quant path" in format_report(summary)
 
 
-def test_per_task_and_secondary_tables_are_shown(summary):
+def test_per_task_table_and_the_ppl_disagreement_table_are_shown(summary):
     text = format_report(summary)
     assert "accuracy by task" in text and "arc_easy" in text and "openbookqa" in text
-    # PPL is present but demoted, and labelled as such
-    assert "perplexity (secondary" in text
+    # PPL sits in the headline but its gap against the tasks is called out separately
+    assert "how far PPL disagrees" in text
+    assert "PPL" in text.splitlines()[0] and "dPPL%" in text.splitlines()[0]
+
+
+def test_latency_columns_are_absent_when_not_measured(summary):
+    for r in summary["results"]:
+        r.pop("ttft_ms", None)
+        r.pop("decode_tps", None)
+    text = format_report(summary)
+    header = text.splitlines()[0]
+    assert "TTFT" not in header and "TPS" not in header
+    assert "fake-quant path" not in text  # nothing measured, so nothing to warn about
+    assert "BPV" in header and "dec GB/t" in header
 
 
 def test_missing_metrics_render_as_blanks_not_crashes():

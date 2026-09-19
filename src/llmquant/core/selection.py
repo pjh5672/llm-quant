@@ -21,7 +21,9 @@ class SelectionConfig:
     accuracy_weight: float = 1.0
     bpv_weight: float = 2.0
     decode_speed_weight: float = 2.0
-    prefill_speed_weight: float = 1.0
+    # 0 by default: TTFT is only measured on request, because under mode=fake every
+    # combination runs the same bf16 GEMM and the measurement cannot separate them
+    prefill_speed_weight: float = 0.0
     generation_weight: float = 1.0  # stage-2 agreement, when no task score exists
 
     def __post_init__(self):

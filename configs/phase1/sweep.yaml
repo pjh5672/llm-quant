@@ -21,7 +21,10 @@ evaluation:
   task_limit: null        # null uses each task default (arc 500, openbookqa 500, gsm8k 100)
   ppl: true               # secondary: cheap and comparable, but teacher-forced
   metric: wikitext2
-  latency: true           # TTFT + decode TPS
+  # TTFT/TPS measured on the fake-quant path cannot separate the combinations: every one
+  # of them stores dequantized bf16 weights and moves the same bytes. BPV and
+  # decode_gb_per_token carry the speed signal instead. Turn this on at Phase 3/4.
+  latency: false
   latency_prompt_tokens: 512
   latency_new_tokens: 64
   generation: true        # stage 2 on the shortlist: LAMBADA + agreement with bf16
@@ -33,7 +36,7 @@ selection:
   accuracy_weight: 1.0
   bpv_weight: 2.0
   decode_speed_weight: 2.0
-  prefill_speed_weight: 1.0
+  prefill_speed_weight: 0.0   # only meaningful once latency is measured on a real stage
 
 sweep:
   attn_weight: [int4, int8]

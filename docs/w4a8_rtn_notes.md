@@ -508,17 +508,19 @@ PPL은 여전히 싸고 논문 비교가 되므로 **보조 지표로 남기되*
 | 축 | 지표 | 출처 |
 |---|---|---|
 | 정확도 | 태스크 평균 + 저하율 `dacc%` | 생성 (ARC-Easy/Challenge, OpenBookQA, GSM8K) |
+| 정확도(보조) | **PPL** + `dPPL%` | teacher-forced |
 | 압축 | **BPV** = `num_bits + scale_bits/group_size` | 해석적 |
 | decode 속도 | `decode_gb_per_token` + **proj** 배속 | 해석적 (decode는 메모리 바운드) |
-| prefill 속도 | **TTFT ms** | 실측 |
-|  | **decode TPS** | 실측 |
+| (선택) 지연 | TTFT ms, decode TPS | 실측 — **기본 off**, 아래 참고 |
 
 BPV 예: int4 g128 = **4.25**, int8 g128 = **8.25**, bf16 = **16**.
 
-⚠️ **`mode=fake`의 TTFT/TPS는 배포 수치가 아니다.** fake quant는 weight를 dequant해서
-bf16으로 들고 있어 **모든 조합의 decode 트래픽이 같다** — 측정 TPS가 거의 안 움직이고
-A8만 activation 양자화 오버헤드로 느려 보인다. 실제 판단은 `proj`(트래픽 기반 해석적 예측)로
-하고, 실측값은 Phase 3~4에서 의미를 갖는다. 리포트가 이 경고를 표에 직접 찍는다.
+⚠️ **실측 TTFT/TPS는 기본에서 껐다 (`latency: false`).** fake quant는 weight를 dequant해서
+bf16으로 들고 있어 **모든 조합의 decode 트래픽이 같다** — 측정 TPS가 조합 간에 거의 안 움직이고
+A8만 activation 양자화 오버헤드로 느려 보인다. 즉 **표에 두면 오해만 부른다.**
+속도 신호는 **BPV와 `decode_gb_per_token`/`proj`**가 담당한다.
+Phase 3~4에서 `latency: true`로 켜면 그때 실측이 의미를 갖는다 (하네스는 그대로 재사용).
+켜져 있을 때만 열이 나타나고, 리포트가 이 경고를 표 아래에 직접 찍는다.
 
 ### lm_head에서 기준이 충돌한다 (실측)
 | 조합 | 디스크 | decode GB/token | proj | BPV |
@@ -539,7 +541,7 @@ selection:
   accuracy_weight: 1.0
   bpv_weight: 2.0
   decode_speed_weight: 2.0
-  prefill_speed_weight: 1.0
+  prefill_speed_weight: 0.0   # latency를 실제로 재는 단계에서만 의미가 있음
 ```
 점수 = `w_bpv·BPV이득% + w_decode·트래픽이득% + w_prefill·TTFT이득% − w_acc·정확도저하%`
 (전부 bf16 대비 %라 가중치가 서로 비교 가능하다).

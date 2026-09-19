@@ -168,7 +168,8 @@ def test_stage_two_options_default_and_override(tmp_path):
 def test_task_suite_defaults(tmp_path):
     c = build_config(["--cfg", write(tmp_path, BASE)], root_dir=tmp_path)
     assert c.tasks == ("arc_easy", "arc_challenge", "openbookqa")
-    assert c.task_limit is None and c.ppl is True and c.latency is True
+    # latency is off by default: on the fake path it cannot separate the combinations
+    assert c.task_limit is None and c.ppl is True and c.latency is False
 
 
 def test_tasks_and_ppl_can_be_selected_independently(tmp_path):

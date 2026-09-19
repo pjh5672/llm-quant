@@ -44,7 +44,7 @@ class RunConfig:
     tasks: tuple[str, ...] = DEFAULT_TASKS    # generation tasks -> the accuracy number
     task_limit: int | None = None             # None uses each task's default n
     ppl: bool = True                          # secondary signal, cheap
-    latency: bool = True                      # TTFT + decode TPS
+    latency: bool = False                     # TTFT + decode TPS; see the note below
     latency_prompt_tokens: int = 512
     latency_new_tokens: int = 64
     selection: SelectionConfig = field(default_factory=SelectionConfig)

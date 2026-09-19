@@ -36,27 +36,43 @@ def _headline(summary, out):
     rows = summary["results"]
     sel = summary["selection"]
     has_task = any("mean_task_acc" in r for r in rows)
-    accuracy_column = "mean acc" if has_task else "PPL"
+    has_ppl = any("ppl" in r for r in rows)
+    # only shown when actually measured: under mode="fake" they cannot separate the
+    # combinations at all, so printing near-identical columns would only mislead
+    has_latency = any(r.get("ttft_ms") for r in rows)
 
-    out.append(
-        f"{'':<5}{_header()}  {accuracy_column:>9} {'dacc%':>7} {'BPV':>6} "
-        f"{'dec GB/t':>9} {'proj':>6} {'TTFT ms':>8} {'TPS':>7} {'score':>8}  lim"
-    )
-    out.append("-" * 104)
+    header = f"{'':<5}{_header()}  {'mean acc' if has_task else 'accuracy':>9} {'dacc%':>7}"
+    if has_ppl:
+        header += f" {'PPL':>9} {'dPPL%':>7}"
+    header += f" {'BPV':>6} {'dec GB/t':>9} {'proj':>6}"
+    if has_latency:
+        header += f" {'TTFT ms':>8} {'TPS':>7}"
+    header += f" {'score':>8}  lim"
+    out.append(header)
+    out.append("-" * len(header))
+
     for i, r in enumerate(sorted(rows, key=lambda r: r["acc_cost_pct"]), 1):
         mark = "*" if r is sel["best"] else " "
-        accuracy = r.get("mean_task_acc") if has_task else r.get("ppl")
         projected = r.get("decode_speedup_projected")
-        out.append(
-            f"{mark}{i:>3} {_label(r)}  {_fmt(accuracy, '9.4f')} "
-            f"{r['acc_cost_pct']:>+7.2f} {_fmt(r.get('bits_per_element'), '6.2f')} "
-            f"{_fmt(r.get('decode_gb_per_token'), '9.4f')} "
-            f"{(_fmt(projected, '5.2f') + 'x') if projected else '     -'} "
-            f"{_fmt(r.get('ttft_ms'), '8.1f')} {_fmt(r.get('decode_tps'), '7.1f')} "
-            f"{_fmt(r.get('score'), '8.2f')}  {'ok' if r['within_limit'] else 'X'}"
+        line = (
+            f"{mark}{i:>3} {_label(r)}  {_fmt(r.get('mean_task_acc'), '9.4f')} "
+            f"{r['acc_cost_pct']:>+7.2f}"
         )
-    out.append("  dacc% = accuracy lost vs bf16; proj = decode speedup implied by the traffic")
-    if any(r.get("ttft_ms") for r in rows):
+        if has_ppl:
+            line += f" {_fmt(r.get('ppl'), '9.4f')} {_fmt(r.get('ppl_increase_pct'), '+7.2f')}"
+        line += (
+            f" {_fmt(r.get('bits_per_element'), '6.2f')} "
+            f"{_fmt(r.get('decode_gb_per_token'), '9.4f')} "
+            f"{(_fmt(projected, '5.2f') + 'x') if projected else '     -'}"
+        )
+        if has_latency:
+            line += f" {_fmt(r.get('ttft_ms'), '8.1f')} {_fmt(r.get('decode_tps'), '7.1f')}"
+        line += f" {_fmt(r.get('score'), '8.2f')}  {'ok' if r['within_limit'] else 'X'}"
+        out.append(line)
+
+    out.append("  dacc% = accuracy lost vs bf16 on the generation tasks; PPL is secondary")
+    out.append("  proj  = decode speedup implied by the traffic, which is what decode is bound by")
+    if has_latency:
         out.append(FAKE_MODE_WARNING)
 
 
@@ -74,17 +90,28 @@ def _per_task(summary, out):
 
 
 def _secondary(summary, out):
-    rows = [r for r in summary["results"] if "ppl" in r]
-    if not rows or not any("mean_task_acc" in r for r in summary["results"]):
+    """How far perplexity disagrees with the generation tasks, for the rows that have both.
+
+    Worth calling out rather than leaving in adjacent columns: PPL is teacher-forced, so a
+    combination can read near-lossless there while its generations move a lot.
+    """
+    rows = [
+        r
+        for r in summary["results"]
+        if "ppl" in r and "mean_task_acc" in r and r.get("ppl_increase_pct") is not None
+    ]
+    if len(rows) < 2:
         return
     out.append("")
-    out.append("== perplexity (secondary; teacher-forced, so it understates generation damage) ==")
-    out.append(f"{'':<5}{_header()}  {'PPL':>9} {'dPPL%':>8}  vs dacc%")
+    out.append("== how far PPL disagrees with the tasks ==")
+    out.append(f"{'':<5}{_header()}  {'dPPL%':>8} {'dacc%':>8} {'understated by':>15}")
     for r in sorted(rows, key=lambda r: r["acc_cost_pct"]):
+        gap = r["acc_cost_pct"] - r["ppl_increase_pct"]
         out.append(
-            f"{'':<5}{_label(r)}  {r['ppl']:>9.4f} {_fmt(r.get('ppl_increase_pct'), '8.2f')}"
-            f"  {r['acc_cost_pct']:>+7.2f}"
+            f"{'':<5}{_label(r)}  {r['ppl_increase_pct']:>+8.2f} {r['acc_cost_pct']:>+8.2f} "
+            f"{gap:>+15.2f}"
         )
+    out.append("  positive = the tasks lost more than perplexity suggested")
 
 
 def _generation(summary, out):
