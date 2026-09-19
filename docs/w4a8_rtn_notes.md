@@ -13,7 +13,8 @@
 - **생성 평가 추가 완료** — LAMBADA + bf16 대비 생성 일치도, 2단계 sweep. "생성 평가" 절 참고.
 - **GEMM 속도 측정 완료** — "속도 측정" 절. A8 전제가 흔들림.
 - **생성 태스크 추가 완료** — ARC-Easy(기본) / GSM8K. "생성 평가" 절 참고.
-- 테스트 **145개** 통과. 커밋 3개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
+- **정확도 기준을 생성 태스크로 교체, TTFT/TPS 실측 추가.** "선택 기준"·"지연 측정" 절 참고.
+- 테스트 **156개** 통과. 커밋 4개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
 
 ### 바로 다음에 할 일
 1. **전체 sweep을 새 기준으로 재실행** (~25분). 기존 `sweep.json`은 BPV·decode·생성 지표가
@@ -51,7 +52,7 @@
 ### 다시 시작하는 방법
 ```powershell
 cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
-.\.venv\Scripts\python.exe -m pytest tests -q                                       # 145개
+.\.venv\Scripts\python.exe -m pytest tests -q                                       # 156개
 .\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\phase1\w8a16.yaml   # 단일 ~1분
 .\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml    # 전체 ~25분
 .\.venv\Scripts\python.exe examples\phase4_bench_gemm.py                                      # GEMM 속도
@@ -296,9 +297,10 @@ llm-quant/
 │   │   │   └── csrc/fake_quant.cu, .cpp
 │   │   └── s5_chat/                        # Phase 5  채팅          (예정)
 │   └── eval/
-│       ├── evaluate.py                     # evaluate_ppl, evaluate_lambada, greedy_continuations, generation_agreement
+│       ├── evaluate.py                     # ppl / lambada / 생성태스크 / 일치도 / measure_latency
 │       ├── run.py                          # run_one, run_generation — 단일 실행과 sweep의 공통 경로
 │       ├── analysis.py                     # pareto / axis_effects / interactions / 가중 점수
+│       ├── report.py                       # 종합 표 렌더링 (계산과 분리)
 │       └── benchmark.py                    # GEMM 벤치 (bf16 vs int8 vs int8 g128)
 ├── examples/
 │   ├── auto_llm.py                         # config 1개 실행 (phase 무관)
@@ -306,11 +308,12 @@ llm-quant/
 │   ├── phase1_analyze.py                   # 저장된 sweep.json 재분석 (GPU 불필요)
 │   ├── phase1_generation.py                # 끝난 sweep에 stage 2(생성 평가)만 얹기
 │   └── phase4_bench_gemm.py                # GEMM 속도 측정
-├── tests/                                  # 145개
+├── tests/                                  # 156개
 │   ├── test_quantization.py  11            ├── test_cuda_kernel.py  41 (bit-exact)
-│   ├── test_config.py        21            ├── test_parser.py       24
-│   ├── test_analysis.py      14            ├── test_metrics.py       8 (디스크 vs decode 충돌)
-│   ├── test_tasks.py         22 (채점 파싱) └── test_benchmark.py     4
+│   ├── test_config.py        21            ├── test_parser.py       27
+│   ├── test_analysis.py      15            ├── test_metrics.py       8 (디스크 vs decode 충돌)
+│   ├── test_tasks.py         24 (채점 파싱) ├── test_report.py        5
+│   └── test_benchmark.py      4
 ├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 잔재 (지워도 됨)
 ├── results/                                # git 제외 (구 결과 보관)
 └── experiments/<project>/                  # git 제외, config 복사 + result.json / sweep.json
@@ -491,64 +494,71 @@ torch의 int8 경로가 텐서코어를 제대로 못 쓰고 있을 가능성이
 커널이라면 달라질 수 있다. 그걸 확인하는 게 Phase 4다.
 **다만 입증 책임이 A8 쪽으로 넘어갔다.** 기본값은 W8A16으로 두는 편이 안전하다.
 
-## 선택 기준 (2026-09-18 개정)
+## 선택 기준 (2026-09-19 개정) — 정확도는 생성 태스크, 순위는 가중 점수
 
-이전 기준은 "PPL 5% 이내 중 **가장 작은 모델**"이었다. 두 가지 문제가 있었다.
-1. **속도를 전혀 못 본다.** A8과 A16은 크기가 같아서 기준상 A8이 영원히 선택될 수 없다.
-2. **디스크 크기는 속도의 프록시로 틀리다.** lm_head에서 둘이 정면으로 어긋난다 (아래).
+### 왜 PPL을 주 지표에서 내렸나
+PPL은 teacher-forced 단일 forward라 **생성 경로를 한 번도 안 탄다.** 실측으로
+`int8/int8`이 PPL +0.11%인데 **생성의 31%가 bf16과 다르고** LAMBADA는 −2%p 떨어졌다.
+PPL은 여전히 싸고 논문 비교가 되므로 **보조 지표로 남기되**, 기준이 최적화하는 값은 아니다.
 
-### 세 가지 비용 지표 (`llmquant/utils/size.py::model_metrics`)
+정확도 = **생성 태스크 스위트의 평균 정확도**, 비용 = **bf16 대비 상대 저하율(%)**.
+태스크 점수가 없는 옛 sweep 행은 PPL 증가율로 자동 대체되므로 과거 결과도 그대로 분석된다.
 
-| 지표 | 뜻 |
-|---|---|
-| `deployed_bytes` | 디스크 크기 |
-| `decode_bytes_per_token` | **토큰마다 읽는 바이트.** decode가 메모리 바운드라 이게 decode 속도를 결정한다 |
-| `bits_per_element` | gaia의 BPV. `num_bits + scale_bits/group_size`, 파라미터 수로 가중평균 |
+### 표에 같이 놓는 네 축
+| 축 | 지표 | 출처 |
+|---|---|---|
+| 정확도 | 태스크 평균 + 저하율 `dacc%` | 생성 (ARC-Easy/Challenge, OpenBookQA, GSM8K) |
+| 압축 | **BPV** = `num_bits + scale_bits/group_size` | 해석적 |
+| decode 속도 | `decode_gb_per_token` + **proj** 배속 | 해석적 (decode는 메모리 바운드) |
+| prefill 속도 | **TTFT ms** | 실측 |
+|  | **decode TPS** | 실측 |
 
 BPV 예: int4 g128 = **4.25**, int8 g128 = **8.25**, bf16 = **16**.
 
-**lm_head에서 두 기준이 충돌한다** (실측):
+⚠️ **`mode=fake`의 TTFT/TPS는 배포 수치가 아니다.** fake quant는 weight를 dequant해서
+bf16으로 들고 있어 **모든 조합의 decode 트래픽이 같다** — 측정 TPS가 거의 안 움직이고
+A8만 activation 양자화 오버헤드로 느려 보인다. 실제 판단은 `proj`(트래픽 기반 해석적 예측)로
+하고, 실측값은 Phase 3~4에서 의미를 갖는다. 리포트가 이 경고를 표에 직접 찍는다.
 
-| 조합 | 디스크 | decode GB/token | decode 배속 | BPV |
+### lm_head에서 기준이 충돌한다 (실측)
+| 조합 | 디스크 | decode GB/token | proj | BPV |
 |---|---|---|---|---|
 | bf16 | 2.3019 | 2.3019 | 1.00x | 16.00 |
 | attn·mlp int8, head **bf16** | **1.4240** | 1.4240 | 1.62x | 9.90 |
 | attn·mlp int8, head **int8** | 1.6762 | **1.1870** | **1.94x** | 8.25 |
-| attn·mlp int4, head bf16 | 0.9708 | 0.9708 | 2.37x | 6.75 |
 | attn·mlp int4, head int8 | 1.2231 | 0.7338 | 3.14x | 5.10 |
 
 `tie_word_embeddings=true`라 lm_head를 양자화하면 tie가 끊겨 **디스크는 +252MB 늘지만**,
 decode는 lm_head를 토큰마다 통째로 읽고 embedding은 행 조회뿐이라 **트래픽은 줄어든다.**
-→ 크기 기준은 head bf16을, 속도 기준은 head int8을 고른다. **head_weight를 크기만 보고
-확정하면 안 된다.**
+→ **head_weight를 크기만 보고 확정하면 안 된다.**
 
 ### 가중 점수
-
 ```yaml
 selection:
-  ppl_limit_ratio: 1.05      # 하드 제약 (null이면 해제)
+  acc_drop_limit_pct: 5.0   # 하드 제약: 정확도 저하율 상한 (null이면 해제)
   accuracy_weight: 1.0
   bpv_weight: 2.0
   decode_speed_weight: 2.0
-  generation_weight: 1.0
+  prefill_speed_weight: 1.0
 ```
+점수 = `w_bpv·BPV이득% + w_decode·트래픽이득% + w_prefill·TTFT이득% − w_acc·정확도저하%`
+(전부 bf16 대비 %라 가중치가 서로 비교 가능하다).
 
-점수 = `w_bpv·BPV이득% + w_speed·decode이득% − w_acc·PPL비용% − w_gen·생성불일치%`
-(전부 bf16 대비 %로 정규화해서 가중치를 비교 가능하게 만든 것).
+- 하드 제약을 통과한 것 중 점수 최대를 고른다.
+- 가중치를 바꿔가며 재분석: `phase1_analyze.py <sweep.json> --bpv-weight 5 --no-limit`
+- ⚠️ **없는 지표를 0으로 치지 않는다.** 정확도는 baseline에서 직접 유도하고, 나머지는
+  `score_missing`에 기록한다. (0으로 치면 가장 공격적인 조합이 항상 이긴다 — 테스트가 잡은 버그)
 
-- 하드 제약을 통과한 것 중 점수 최대를 고른다. `selection`을 안 주면 **옛 규칙**(최소 크기)으로
-  떨어져서 과거 sweep이 같은 답을 재현한다.
-- 가중치를 바꿔가며 재분석 가능: `phase1_analyze.py --bpv-weight 5 --speed-weight 3`
-- ⚠️ **정확도 지표가 없으면 0으로 치지 않는다.** baseline에서 직접 유도하고, 그것도 안 되면
-  `score_missing`에 기록한다. (구현 중 테스트가 잡은 버그 — 0으로 치면 가장 공격적인 조합이
-  항상 이긴다.)
+이전 기준은 "PPL 5% 이내 중 **가장 작은 모델**"이었다. 두 가지 문제가 있었다.
+1. **속도를 전혀 못 본다.** A8과 A16은 크기가 같아서 기준상 A8이 영원히 선택될 수 없다.
+2. **디스크 크기는 속도의 프록시로 틀리다.** lm_head에서 둘이 정면으로 어긋난다 (아래).
 
 ## 생성 평가 (2026-09-18)
 
 PPL은 teacher-forced라 **생성 경로를 한 번도 안 건드린다.** 디코드 루프와 KV 캐시를 쓰는
 지표가 따로 필요하다.
 
-### 세 지표
+### 지표들
 - **생성 태스크 정확도** (`generation_task`) — **실제로 토큰을 생성해서 정답과 맞추는 절대 지표.**
   PPL·LAMBADA는 teacher-forced 단일 forward고, 생성 일치도는 상대 지표라 "얼마나 나빠졌나"를
   못 말한다. 이 지표만 그 둘을 동시에 만족한다.
@@ -598,6 +608,17 @@ python examples/phase1_generation.py experiments/phase1-sweep/sweep.json --gener
 - **해석 주의**: 일치율은 "나빠졌다"가 아니라 "달라졌다"를 잰다. greedy라 토큰 하나가 틀어지면
   이후가 전부 어긋나 민감하다. **절대 품질은 LAMBADA를 봐야 한다.**
 - 본 실행에서는 `lambada_limit: 500`으로 돌릴 것.
+
+## 지연 측정 (`llmquant/eval/evaluate.py::measure_latency`)
+
+prefill과 decode를 **따로** 잰다. 서로 다른 regime이라 한쪽만 좋아지는 선택이 있기 때문이다.
+
+- **TTFT** = 프롬프트 제출부터 첫 토큰까지. `max_new_tokens=1` 생성 시간.
+- **decode TPS** = `(전체 시간 − TTFT) / (N−1)`. `min_new_tokens`를 걸어 매 반복 길이를 고정하고,
+  중앙값을 취한다.
+- **peak VRAM**도 같이 기록한다 (fake 모드에서는 조합 간 차이가 없지만 Phase 3~4에서 의미가 생긴다).
+
+⚠️ **GPU가 한가할 때 재야 한다.** 다른 작업과 같은 GPU를 쓰면 값이 무의미하게 낮아진다.
 
 ## packing 저장 형식 (확정)
 

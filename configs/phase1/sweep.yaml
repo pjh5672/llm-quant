@@ -15,7 +15,25 @@ quantization:
   group_size: 128
 
 evaluation:
+  # accuracy = generation tasks. The model writes tokens and they are matched against
+  # known answers, so this is an absolute score on the real decode path.
+  tasks: [arc_easy, arc_challenge, openbookqa]
+  task_limit: null        # null uses each task default (arc 500, openbookqa 500, gsm8k 100)
+  ppl: true               # secondary: cheap and comparable, but teacher-forced
   metric: wikitext2
+  latency: true           # TTFT + decode TPS
+  latency_prompt_tokens: 512
+  latency_new_tokens: 64
+  generation: true        # stage 2 on the shortlist: LAMBADA + agreement with bf16
+  lambada_limit: 500
+  max_new_tokens: 64
+
+selection:
+  acc_drop_limit_pct: 5.0
+  accuracy_weight: 1.0
+  bpv_weight: 2.0
+  decode_speed_weight: 2.0
+  prefill_speed_weight: 1.0
 
 sweep:
   attn_weight: [int4, int8]

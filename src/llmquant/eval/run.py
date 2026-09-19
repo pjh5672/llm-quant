@@ -1,7 +1,19 @@
 """One config -> one measured run.
 
-Both examples/auto_llm.py and examples/phase1_sweep.py go through here, so a sweep row
-and a standalone run of the same config can never drift apart.
+examples/auto_llm.py and examples/phase1_sweep.py both go through here, so a sweep row and
+a standalone run of the same config cannot drift apart.
+
+What gets measured, and why:
+
+  tasks    generation tasks (ARC, OpenBookQA, GSM8K). The model writes tokens and they are
+           matched against known answers, so this is an absolute score on the real decode
+           path. This is the accuracy number the selection criterion uses.
+  ppl      wikitext perplexity. Kept as a secondary signal because it is cheap and
+           comparable to the literature, but it is teacher-forced and understates the
+           damage: a combination reading +0.11% PPL still changed 12.5% of generations.
+  latency  TTFT and decode throughput, measured separately because prefill is compute
+           bound and decode is memory bound.
+  cost     disk bytes, decode bytes per token, bits per element.
 """
 
 import functools
@@ -11,13 +23,21 @@ from dataclasses import replace
 import torch
 from transformers import AutoTokenizer
 
-from llmquant.core.config import ModelArgs
-from llmquant.core.config import BF16, WEIGHT_TARGETS, normalize_dtype
-from llmquant.core.datasets import get_eval_ids
-from llmquant.eval.evaluate import evaluate_ppl
-from llmquant.core.oneshot import oneshot
-from llmquant.core.model import load_pretrained
+from llmquant.core.config import BF16, WEIGHT_TARGETS, ModelArgs, normalize_dtype
+from llmquant.core.datasets import get_eval_ids, get_generation_task
 from llmquant.core.metrics import model_metrics
+from llmquant.core.model import load_pretrained
+from llmquant.core.oneshot import oneshot
+from llmquant.eval.evaluate import (
+    evaluate_generation_task,
+    evaluate_lambada,
+    evaluate_ppl,
+    generation_agreement,
+    greedy_continuations,
+    measure_latency,
+)
+
+GB = 1024**3
 
 
 @functools.lru_cache(maxsize=4)
@@ -26,42 +46,10 @@ def eval_ids(dataset: str, model_id: str):
     return get_eval_ids(dataset, AutoTokenizer.from_pretrained(model_id))
 
 
-def run_one(config) -> dict:
-    """Load, quantize, evaluate. The model is rebuilt per call because fake quant is in place."""
-    model, _ = load_pretrained(ModelArgs(model_id=config.model, device=config.device))
-    recipe = config.to_modifier()
-    cost = model_metrics(model, recipe)
-    gb = 1024**3
-    if recipe is not None:
-        oneshot(model, recipe)
-
-    ids = eval_ids(config.metric or "wikitext2", config.model)
-    t0 = time.time()
-    ppl = evaluate_ppl(model, ids, config.seq_len)
-    # With quantize=False nothing is touched, so report every target as bf16 rather than
-    # echoing config values that were never applied. That also makes the baseline row the
-    # natural all-bf16 reference for llmquant.eval.analysis.
-    quant = config.quant if config.quantize else replace(
-        config.quant, **{t: BF16 for t in (*WEIGHT_TARGETS, "activation")}
-    )
-    row = {
-        "name": quant.describe() if config.quantize else "bf16",
-        "quantize": config.quantize,
-        "attn_weight": normalize_dtype(quant.attn_weight),
-        "mlp_weight": normalize_dtype(quant.mlp_weight),
-        "head_weight": normalize_dtype(quant.head_weight),
-        "activation": normalize_dtype(quant.activation),
-        "group_size": quant.group_size,
-        "ppl": ppl,
-        "size_gb": cost["deployed_bytes"] / gb,
-        "decode_gb_per_token": cost["decode_bytes_per_token"] / gb,
-        "bits_per_element": cost["bits_per_element"],
-        "eval_sec": time.time() - t0,
-    }
-
-    del model
-    torch.cuda.empty_cache()
-    return row
+@functools.lru_cache(maxsize=8)
+def task_examples(name: str, limit):
+    examples, spec = get_generation_task(name, limit)
+    return tuple(examples), spec
 
 
 @functools.lru_cache(maxsize=2)
@@ -71,41 +59,89 @@ def lambada_examples(limit: int):
     return tuple(get_lambada_examples(limit))
 
 
-def run_generation(config, reference=None):
-    """Stage 2: the evaluations that need the decode path, so they only run on a shortlist.
+def _applied(config):
+    """The dtype fields as actually applied; with quantize=False nothing was."""
+    if config.quantize:
+        return config.quant
+    return replace(config.quant, **{t: BF16 for t in (*WEIGHT_TARGETS, "activation")})
 
-    Returns (metrics, continuations). The continuations of the bf16 run become the reference
-    every other run is compared against.
+
+def run_one(config) -> dict:
+    """Load, quantize, measure. The model is rebuilt per call because fake quant is in place."""
+    model, tokenizer = load_pretrained(ModelArgs(model_id=config.model, device=config.device))
+    recipe = config.to_modifier()
+    cost = model_metrics(model, recipe)
+    if recipe is not None:
+        oneshot(model, recipe)
+
+    quant = _applied(config)
+    started = time.time()
+    row = {
+        "name": quant.describe() if config.quantize else "bf16",
+        "quantize": config.quantize,
+        "attn_weight": normalize_dtype(quant.attn_weight),
+        "mlp_weight": normalize_dtype(quant.mlp_weight),
+        "head_weight": normalize_dtype(quant.head_weight),
+        "activation": normalize_dtype(quant.activation),
+        "group_size": quant.group_size,
+        "size_gb": cost["deployed_bytes"] / GB,
+        "decode_gb_per_token": cost["decode_bytes_per_token"] / GB,
+        "bits_per_element": cost["bits_per_element"],
+    }
+
+    accuracies = {}
+    for name in config.tasks:
+        examples, spec = task_examples(name, config.task_limit)
+        accuracies[name] = evaluate_generation_task(
+            model, tokenizer, list(examples), spec["score"], spec["max_new_tokens"]
+        )
+    if accuracies:
+        row["task_acc"] = accuracies
+        row["mean_task_acc"] = sum(accuracies.values()) / len(accuracies)
+
+    if config.ppl:
+        ids = eval_ids(config.metric or "wikitext2", config.model)
+        row["ppl"] = evaluate_ppl(model, ids, config.seq_len)
+
+    if config.latency:
+        row.update(
+            measure_latency(
+                model,
+                tokenizer,
+                prompt_tokens=config.latency_prompt_tokens,
+                new_tokens=config.latency_new_tokens,
+            )
+        )
+
+    row["eval_sec"] = time.time() - started
+    del model
+    torch.cuda.empty_cache()
+    return row
+
+
+def run_generation(config, reference=None):
+    """Stage 2: the relative generation check, run only on a shortlist.
+
+    Returns (metrics, continuations). The bf16 run's continuations become the reference
+    everything else is compared against.
     """
-    from llmquant.core.datasets import GENERATION_PROMPTS, get_generation_task
-    from llmquant.eval.evaluate import (
-        evaluate_generation_task,
-        evaluate_lambada,
-        generation_agreement,
-        greedy_continuations,
-    )
+    from llmquant.core.datasets import GENERATION_PROMPTS
 
     model, tokenizer = load_pretrained(ModelArgs(model_id=config.model, device=config.device))
     recipe = config.to_modifier()
     if recipe is not None:
         oneshot(model, recipe)
 
-    t0 = time.time()
+    started = time.time()
     metrics = {
-        "lambada_acc": evaluate_lambada(model, tokenizer, list(lambada_examples(config.lambada_limit)))
-    }
-    if config.generation_task:
-        examples, spec = get_generation_task(config.generation_task, config.generation_task_limit)
-        metrics["task"] = config.generation_task
-        metrics["task_acc"] = evaluate_generation_task(
-            model, tokenizer, examples, spec["score"], spec["max_new_tokens"]
+        "lambada_acc": evaluate_lambada(
+            model, tokenizer, list(lambada_examples(config.lambada_limit))
         )
-    continuations = greedy_continuations(
-        model, tokenizer, GENERATION_PROMPTS, config.max_new_tokens
-    )
+    }
+    continuations = greedy_continuations(model, tokenizer, GENERATION_PROMPTS, config.max_new_tokens)
     if reference is not None:
         metrics.update(generation_agreement(reference, continuations))
-    metrics["generation_sec"] = time.time() - t0
+    metrics["generation_sec"] = time.time() - started
 
     del model
     torch.cuda.empty_cache()

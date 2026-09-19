@@ -17,7 +17,8 @@ import torch
 
 from llmquant.core.parser import build_config
 from llmquant.core.selection import SelectionConfig
-from llmquant.eval.analysis import format_report, shortlist, summarize
+from llmquant.eval.analysis import shortlist, summarize
+from llmquant.eval.report import format_report
 from llmquant.eval.run import run_generation
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,22 +41,14 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("path", type=Path, help="sweep.json from examples/phase1_sweep.py")
     p.add_argument("--cfg", type=str, default="configs/phase1/sweep.yaml")
-    p.add_argument("--generation-task", type=str, default=None, help="arc_easy | gsm8k")
-    p.add_argument("--generation-task-limit", type=int, default=None)
     args = p.parse_args()
 
-    argv = ["--cfg", args.cfg]
-    if args.generation_task:
-        argv += ["--generation-task", args.generation_task]
-    if args.generation_task_limit:
-        argv += ["--generation-task-limit", str(args.generation_task_limit)]
-    base = build_config(argv, root_dir=ROOT)
+    base = build_config(["--cfg", args.cfg], root_dir=ROOT)
     torch.manual_seed(base.seed)
 
     payload = json.loads(args.path.read_text(encoding="utf-8"))
     rows = payload["results"] if isinstance(payload, dict) else payload
-    selection = base.selection
-    summary = summarize(rows, selection.ppl_limit_ratio, selection)
+    summary = summarize(rows, base.selection)
 
     baseline = next(r for r in rows if not r.get("quantize", True))
     print("stage 2 reference: bf16", flush=True)
@@ -73,7 +66,7 @@ def main():
         row.update(row_metrics)
         print(json.dumps({"name": row["name"], **row_metrics}), flush=True)
 
-    summary = summarize(rows, selection.ppl_limit_ratio, selection)
+    summary = summarize(rows, base.selection)
     args.path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print()
     print(format_report(summary))

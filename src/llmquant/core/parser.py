@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 from llmquant.core.config import BF16, QuantConfig
+from llmquant.core.datasets.tasks import DEFAULT_TASKS, TASKS
 from llmquant.core.selection import SelectionConfig
 
 SECTIONS = ("defaults", "quantization", "evaluation")
@@ -40,8 +41,12 @@ class RunConfig:
     generation: bool = True  # stage 2 of a sweep: LAMBADA + greedy agreement vs bf16
     lambada_limit: int = 500
     max_new_tokens: int = 64
-    generation_task: str | None = "arc_easy"  # arc_easy | gsm8k | null
-    generation_task_limit: int | None = None  # None uses the task default
+    tasks: tuple[str, ...] = DEFAULT_TASKS    # generation tasks -> the accuracy number
+    task_limit: int | None = None             # None uses each task's default n
+    ppl: bool = True                          # secondary signal, cheap
+    latency: bool = True                      # TTFT + decode TPS
+    latency_prompt_tokens: int = 512
+    latency_new_tokens: int = 64
     selection: SelectionConfig = field(default_factory=SelectionConfig)
     project_dir: Path = Path(".")
     sweep: dict = field(default_factory=dict)  # QuantConfig field -> list of values
@@ -60,14 +65,12 @@ class RunConfig:
         for flag, phase in (("pack", "Phase 3"), ("load_packed", "Phase 4")):
             if getattr(self, flag):
                 raise NotImplementedError(f"{flag} is not implemented yet ({phase}).")
-        if self.generation_task is not None:
-            from llmquant.core.datasets.tasks import TASKS
-
-            if self.generation_task not in TASKS:
-                raise ValueError(
-                    f"unknown generation_task {self.generation_task!r}, "
-                    f"expected one of {sorted(TASKS)} or null"
-                )
+        object.__setattr__(self, "tasks", tuple(self.tasks or ()))
+        unknown = [t for t in self.tasks if t not in TASKS]
+        if unknown:
+            raise ValueError(f"unknown task(s) {unknown}, expected from {sorted(TASKS)}")
+        if not self.tasks and not self.ppl:
+            raise ValueError("nothing to measure: enable at least one task, or ppl")
 
     def to_modifier(self):
         return self.quant.to_modifier(mode=self.mode) if self.quantize else None
@@ -100,9 +103,11 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--no-generation", action="store_false", dest="generation", default=None)
     p.add_argument("--lambada-limit", type=int, dest="lambada_limit")
     p.add_argument("--max-new-tokens", type=int, dest="max_new_tokens")
-    p.add_argument("--generation-task", type=str, dest="generation_task",
-                   help="arc_easy | gsm8k")
-    p.add_argument("--generation-task-limit", type=int, dest="generation_task_limit")
+    p.add_argument("--tasks", type=str, nargs="+",
+                   help="arc_easy arc_challenge openbookqa gsm8k")
+    p.add_argument("--task-limit", type=int, dest="task_limit")
+    p.add_argument("--no-ppl", action="store_false", dest="ppl", default=None)
+    p.add_argument("--no-latency", action="store_false", dest="latency", default=None)
     for key in _QUANT_KEYS:
         if key == "group_size":
             p.add_argument("--group-size", type=int, dest="group_size")

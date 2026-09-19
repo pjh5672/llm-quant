@@ -158,3 +158,48 @@ def evaluate_generation_task(model, tokenizer, examples, score, max_new_tokens: 
         )
         correct += bool(score(text, example))
     return correct / len(examples)
+
+
+@torch.no_grad()
+def measure_latency(model, tokenizer, prompt_tokens: int = 512, new_tokens: int = 64, iters: int = 3):
+    """Prefill TTFT and steady-state decode throughput, measured separately.
+
+    They live in different regimes and a quantization choice can help one and not the
+    other: prefill is compute bound, decode is memory bound and tracks the bytes of weight
+    read per token.
+
+    ⚠️ Under mode="fake" these are NOT deployed numbers. Fake quant stores dequantized bf16
+    weights, so every combination moves the same bytes and decodes at the same speed, while
+    A8 pays an extra activation quant per forward and measures *slower*. Compare against
+    decode_bytes_per_token (llmquant.core.metrics) until a real stage exists.
+    """
+    device = next(model.parameters()).device
+    ids = torch.randint(0, tokenizer.vocab_size, (1, prompt_tokens), device=device)
+    inputs = {"input_ids": ids, "attention_mask": torch.ones_like(ids)}
+
+    def timed(n):
+        torch.cuda.synchronize()
+        start = time.perf_counter()
+        model.generate(
+            **inputs,
+            max_new_tokens=n,
+            min_new_tokens=n,  # keep every iteration the same length
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        torch.cuda.synchronize()
+        return time.perf_counter() - start
+
+    timed(min(4, new_tokens))  # warmup
+    torch.cuda.reset_peak_memory_stats(device)
+    first = sorted(timed(1) for _ in range(iters))[iters // 2]
+    full = sorted(timed(new_tokens) for _ in range(iters))[iters // 2]
+
+    decode_seconds = max(full - first, 1e-9)
+    return {
+        "ttft_ms": first * 1e3,
+        "decode_tps": (new_tokens - 1) / decode_seconds,
+        "peak_vram_gb": torch.cuda.max_memory_allocated(device) / 1024**3,
+        "latency_prompt_tokens": prompt_tokens,
+        "latency_new_tokens": new_tokens,
+    }

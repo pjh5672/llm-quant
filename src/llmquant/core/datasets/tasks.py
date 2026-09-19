@@ -1,13 +1,17 @@
 """Generation tasks: the model writes tokens and they are matched against a known answer.
 
 Unlike PPL and LAMBADA (both teacher-forced single forward passes), these run the decode
-loop and score what actually came out, on an absolute scale.
+loop and score what actually came out, on an absolute scale. Accuracy across a suite of
+them, relative to bf16, is what the selection criterion treats as the accuracy cost.
 
-  arc_easy  multiple choice answered by generating the option letter. Short outputs, so
-            it is cheap and n can be large enough for a tight confidence interval.
-  gsm8k     grade-school math with chain of thought, matched on the final number. Long
-            outputs make it far more sensitive to compounding error, but a 1B model scores
-            low enough that the noise dominates at any affordable n.
+  arc_easy       ARC-Easy, answered by generating the option letter
+  arc_challenge  ARC-Challenge, the harder split of the same set
+  openbookqa     OpenBookQA, same shape
+  gsm8k          grade-school math with chain of thought, matched on the final number.
+                 Far more sensitive to compounding error, but a 1B model scores low
+                 enough that noise dominates at any affordable n, so it is opt-in.
+
+Answer parsing is the part that fails silently, so both scorers are pinned by tests.
 """
 
 import re
@@ -15,19 +19,24 @@ import re
 from datasets import load_dataset
 
 ANSWER_RE = re.compile(r"-?[\d,]*\.?\d+")
+CHOICE_INSTRUCTION = "Answer with the letter of the correct option only."
+GSM8K_INSTRUCTION = (
+    "Think step by step, then give the final answer on its own line as '#### <number>'."
+)
 
 
-def get_arc_easy(limit: int | None = 500):
-    data = load_dataset("allenai/ai2_arc", "ARC-Easy", split="test")
-    rows = data.select(range(min(limit, len(data)))) if limit else data
+def _take(data, limit):
+    return data.select(range(min(limit, len(data)))) if limit else data
+
+
+def _choice_examples(rows, question_key):
     out = []
     for row in rows:
         labels, texts = row["choices"]["label"], row["choices"]["text"]
         options = "\n".join(f"{label}. {text}" for label, text in zip(labels, texts))
         out.append(
             {
-                "prompt": f"{row['question']}\n{options}\n\n"
-                "Answer with the letter of the correct option only.",
+                "prompt": f"{row[question_key]}\n{options}\n\n{CHOICE_INSTRUCTION}",
                 "answer": row["answerKey"],
                 "choices": list(labels),
             }
@@ -35,17 +44,23 @@ def get_arc_easy(limit: int | None = 500):
     return out
 
 
-def get_gsm8k(limit: int | None = 100):
-    data = load_dataset("openai/gsm8k", "main", split="test")
-    rows = data.select(range(min(limit, len(data)))) if limit else data
+def get_arc(config, limit):
+    return _choice_examples(_take(load_dataset("allenai/ai2_arc", config, split="test"), limit), "question")
+
+
+def get_openbookqa(limit):
+    return _choice_examples(_take(load_dataset("openbookqa", "main", split="test"), limit), "question_stem")
+
+
+def get_gsm8k(limit):
+    data = _take(load_dataset("openai/gsm8k", "main", split="test"), limit)
     return [
         {
-            "prompt": f"{row['question']}\n\nThink step by step, then give the final "
-            "answer on its own line as '#### <number>'.",
+            "prompt": f"{row['question']}\n\n{GSM8K_INSTRUCTION}",
             "answer": row["answer"].rsplit("####", 1)[-1].strip(),
             "choices": None,
         }
-        for row in rows
+        for row in data
     ]
 
 
@@ -75,9 +90,32 @@ def _score_number(text, example):
 
 
 TASKS = {
-    "arc_easy": {"loader": get_arc_easy, "score": _score_choice, "max_new_tokens": 8, "limit": 500},
-    "gsm8k": {"loader": get_gsm8k, "score": _score_number, "max_new_tokens": 256, "limit": 100},
+    "arc_easy": {
+        "loader": lambda limit: get_arc("ARC-Easy", limit),
+        "score": _score_choice,
+        "max_new_tokens": 8,
+        "limit": 500,
+    },
+    "arc_challenge": {
+        "loader": lambda limit: get_arc("ARC-Challenge", limit),
+        "score": _score_choice,
+        "max_new_tokens": 8,
+        "limit": 500,
+    },
+    "openbookqa": {
+        "loader": get_openbookqa,
+        "score": _score_choice,
+        "max_new_tokens": 8,
+        "limit": 500,
+    },
+    "gsm8k": {
+        "loader": get_gsm8k,
+        "score": _score_number,
+        "max_new_tokens": 256,
+        "limit": 100,
+    },
 }
+DEFAULT_TASKS = ("arc_easy", "arc_challenge", "openbookqa")
 
 
 def get_generation_task(name: str, limit: int | None = None):

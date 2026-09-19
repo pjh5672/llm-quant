@@ -4,14 +4,14 @@
 
 Two stages, because the evaluations cost very different amounts:
 
-  stage 1  wikitext PPL over the whole grid. One forward per chunk, ~1 min per run.
-  stage 2  LAMBADA accuracy + greedy agreement with the bf16 model, on a shortlist only
-           (pareto front + anything inside the accuracy limit). These run the decode loop,
-           so they are the only numbers here that exercise generation and the KV cache.
+  stage 1  generation task accuracy (the number the criterion ranks on), plus perplexity,
+           latency and the cost metrics -- for every combination in the grid.
+  stage 2  LAMBADA and greedy agreement with the bf16 model, on a shortlist only
+           (pareto front plus anything inside the accuracy limit).
 
-Every run goes through llmquant.eval.run, the same code path examples/auto_llm.py
-uses, so a sweep row and a standalone run of that config cannot drift apart.
-Results land in experiments/<project>/.
+Every run goes through llmquant.eval.run, the same code path examples/auto_llm.py uses, so
+a sweep row and a standalone run of that config cannot drift apart. Results land in
+experiments/<project>/.
 """
 
 import json
@@ -20,15 +20,16 @@ from pathlib import Path
 
 import torch
 
-from llmquant.eval.analysis import format_report, shortlist, summarize
 from llmquant.core.parser import build_config, expand_sweep
+from llmquant.eval.analysis import shortlist, summarize
+from llmquant.eval.report import format_report
 from llmquant.eval.run import run_generation, run_one
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def planned_runs(config):
-    """bf16 baseline first (it defines the limit and the generation reference), then the grid."""
+    """bf16 baseline first: it defines the limit and the generation reference."""
     yield replace(config, quantize=False)
     targets = ("attn_weight", "mlp_weight", "head_weight")
     for run in expand_sweep(config):
@@ -37,8 +38,8 @@ def planned_runs(config):
         yield run
 
 
-def run_stage_two(config, pairs, summary):
-    """Generation metrics for the shortlist, measured against the bf16 run's own output."""
+def run_stage_two(pairs, summary):
+    """The relative generation check, against the bf16 run's own output."""
     picked = shortlist(summary)
     if not picked:
         return
@@ -63,7 +64,6 @@ def run_stage_two(config, pairs, summary):
 def main():
     config = build_config(root_dir=ROOT)
     torch.manual_seed(config.seed)
-    limit_ratio = config.selection.ppl_limit_ratio
 
     pairs = []
     for run in planned_runs(config):
@@ -72,10 +72,10 @@ def main():
         print(json.dumps(row), flush=True)
     results = [row for _, row in pairs]
 
-    summary = summarize(results, limit_ratio, config.selection)
+    summary = summarize(results, config.selection)
     if config.generation:
-        run_stage_two(config, pairs, summary)
-        summary = summarize(results, limit_ratio, config.selection)  # rescore with generation
+        run_stage_two(pairs, summary)
+        summary = summarize(results, config.selection)  # rescore with the stage-2 metrics
 
     out = config.project_dir / "sweep.json"
     out.write_text(json.dumps(summary, indent=2), encoding="utf-8")

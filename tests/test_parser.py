@@ -127,11 +127,11 @@ def test_bad_sweep_section_is_rejected(tmp_path, sweep, match):
 def test_selection_section_is_parsed(tmp_path):
     cfg = {
         "defaults": {"project": "p"},
-        "selection": {"ppl_limit_ratio": 1.02, "bpv_weight": 5.0, "decode_speed_weight": 3.0},
+        "selection": {"acc_drop_limit_pct": 2.0, "bpv_weight": 5.0, "prefill_speed_weight": 3.0},
     }
     c = build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
-    assert c.selection.ppl_limit_ratio == 1.02
-    assert c.selection.bpv_weight == 5.0 and c.selection.decode_speed_weight == 3.0
+    assert c.selection.acc_drop_limit_pct == 2.0
+    assert c.selection.bpv_weight == 5.0 and c.selection.prefill_speed_weight == 3.0
     assert c.selection.accuracy_weight == 1.0  # untouched keys keep their default
 
 
@@ -143,7 +143,11 @@ def test_unknown_selection_key_is_rejected(tmp_path):
 
 @pytest.mark.parametrize(
     "selection,match",
-    [({"ppl_limit_ratio": 0.9}, "must be >= 1.0"), ({"bpv_weight": -1}, "must be >= 0")],
+    [
+        ({"acc_drop_limit_pct": -1}, "must be >= 0"),
+        ({"bpv_weight": -1}, "must be >= 0"),
+        ({"prefill_speed_weight": -1}, "must be >= 0"),
+    ],
 )
 def test_bad_selection_values_are_rejected(tmp_path, selection, match):
     cfg = {"defaults": {"project": "p"}, "selection": selection}
@@ -151,7 +155,7 @@ def test_bad_selection_values_are_rejected(tmp_path, selection, match):
         build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
 
 
-def test_generation_options_default_and_override(tmp_path):
+def test_stage_two_options_default_and_override(tmp_path):
     c = build_config(["--cfg", write(tmp_path, BASE)], root_dir=tmp_path)
     assert c.generation is True and c.lambada_limit == 500 and c.max_new_tokens == 64
     c = build_config(
@@ -161,23 +165,34 @@ def test_generation_options_default_and_override(tmp_path):
     assert c.generation is False and c.lambada_limit == 50
 
 
-def test_generation_task_defaults_and_can_be_disabled(tmp_path):
+def test_task_suite_defaults(tmp_path):
     c = build_config(["--cfg", write(tmp_path, BASE)], root_dir=tmp_path)
-    assert c.generation_task == "arc_easy" and c.generation_task_limit is None
-
-    cfg = {**BASE, "evaluation": {**BASE["evaluation"], "generation_task": None}}
-    assert build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path).generation_task is None
+    assert c.tasks == ("arc_easy", "arc_challenge", "openbookqa")
+    assert c.task_limit is None and c.ppl is True and c.latency is True
 
 
-def test_unknown_generation_task_is_rejected(tmp_path):
-    cfg = {**BASE, "evaluation": {**BASE["evaluation"], "generation_task": "hellaswag"}}
-    with pytest.raises(ValueError, match="unknown generation_task"):
+def test_tasks_and_ppl_can_be_selected_independently(tmp_path):
+    cfg = {**BASE, "evaluation": {**BASE["evaluation"], "tasks": ["gsm8k"], "ppl": False}}
+    c = build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
+    assert c.tasks == ("gsm8k",) and c.ppl is False
+
+
+def test_unknown_task_is_rejected(tmp_path):
+    cfg = {**BASE, "evaluation": {**BASE["evaluation"], "tasks": ["hellaswag"]}}
+    with pytest.raises(ValueError, match="unknown task"):
         build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
 
 
-def test_generation_task_can_be_overridden_from_the_cli(tmp_path):
+def test_measuring_nothing_is_rejected(tmp_path):
+    cfg = {**BASE, "evaluation": {**BASE["evaluation"], "tasks": [], "ppl": False}}
+    with pytest.raises(ValueError, match="nothing to measure"):
+        build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
+
+
+def test_tasks_and_latency_can_be_overridden_from_the_cli(tmp_path):
     c = build_config(
-        ["--cfg", write(tmp_path, BASE), "--generation-task", "gsm8k", "--generation-task-limit", "20"],
+        ["--cfg", write(tmp_path, BASE), "--tasks", "gsm8k", "arc_easy",
+         "--task-limit", "20", "--no-latency"],
         root_dir=tmp_path,
     )
-    assert c.generation_task == "gsm8k" and c.generation_task_limit == 20
+    assert c.tasks == ("gsm8k", "arc_easy") and c.task_limit == 20 and c.latency is False
