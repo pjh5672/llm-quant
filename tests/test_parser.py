@@ -1,7 +1,7 @@
 import pytest
 import yaml
 
-from llmquant.args.parser import RunConfig, build_config
+from llmquant.core.parser import RunConfig, build_config
 
 BASE = {
     "defaults": {"project": "p", "model": "m", "seq_len": 512},
@@ -75,7 +75,7 @@ def test_sweep_expands_to_the_cross_product(tmp_path):
         "defaults": {"project": "p"},
         "sweep": {"attn_weight": ["int4", "int8"], "mlp_weight": ["int4", "int8"]},
     }
-    from llmquant.args.parser import expand_sweep
+    from llmquant.core.parser import expand_sweep
 
     runs = expand_sweep(build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path))
     assert len(runs) == 4
@@ -87,7 +87,7 @@ def test_sweep_expands_to_the_cross_product(tmp_path):
 
 
 def test_sweep_collapses_runs_that_resolve_to_the_same_schemes(tmp_path):
-    from llmquant.args.parser import expand_sweep
+    from llmquant.core.parser import expand_sweep
 
     # all weights bf16 -> the activation dtype has nothing to act on
     cfg = {"defaults": {"project": "p"}, "sweep": {"activation": ["bf16", "int8"]}}
@@ -104,7 +104,7 @@ def test_sweep_collapses_runs_that_resolve_to_the_same_schemes(tmp_path):
 
 
 def test_no_sweep_section_yields_a_single_run(tmp_path):
-    from llmquant.args.parser import expand_sweep
+    from llmquant.core.parser import expand_sweep
 
     runs = expand_sweep(build_config(["--cfg", write(tmp_path, BASE)], root_dir=tmp_path))
     assert len(runs) == 1 and runs[0].quant.attn_weight == "int4"

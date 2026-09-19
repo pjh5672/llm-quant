@@ -2,7 +2,7 @@
 
 import pytest
 
-from llmquant.analysis import (
+from llmquant.eval.analysis import (
     axis_effects,
     baseline_ppl,
     format_report,
@@ -106,8 +106,8 @@ def test_summarize_fills_derived_fields_and_formats(grid):
     assert "do the losses add up?" in text
 
 
-from llmquant.analysis import score_rows, shortlist
-from llmquant.args.selection import SelectionConfig
+from llmquant.eval.analysis import score_rows, shortlist
+from llmquant.core.selection import SelectionConfig
 
 
 def costed(r, bpv, decode):

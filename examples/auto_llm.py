@@ -1,7 +1,7 @@
 """Config-driven single run: load -> quantize -> evaluate -> report.
 
-    python examples/auto_llm.py --cfg configs/llama3.2-1b-w4a8.yaml
-    python examples/auto_llm.py --cfg configs/llama3.2-1b-w4a8.yaml --mlp-weight int8
+    python examples/auto_llm.py --cfg configs/phase1/w4a8.yaml
+    python examples/auto_llm.py --cfg configs/phase1/w4a8.yaml --mlp-weight int8
 
 Saving, packing and loading a packed model are Phase 3/4; those config slots exist and
 raise a clear NotImplementedError rather than silently doing nothing.
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import torch
 
-from llmquant.args.parser import build_config
-from llmquant.entrypoints.run import run_one
+from llmquant.core.parser import build_config
+from llmquant.eval.run import run_one
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -6,7 +6,7 @@
 - **Phase 0·1 완료.** **Phase 2는 아직 시작 전.**
 - **granularity = group_size 128** (weight, activation 둘 다). "group 128 설계" 참고.
 - **CUDA quant-dequant 커널 완성.** PyTorch 레퍼런스와 bit-exact. "bit-exact 규칙" 참고.
-- **config 파이프라인 완성** (gaia-compressor 매핑). `configs/*.yaml` → `auto_llm.py` / `scheme_sweep.py`.
+- **config 파이프라인 완성** (gaia-compressor 매핑). `configs/*.yaml` → `auto_llm.py` / `phase1_sweep.py`.
   sweep과 단일 실행이 `entrypoints/run.py` 같은 경로를 탐 (W8A16 단일 실행 PPL이 sweep 값과
   **완전히 동일**: 13.178328514099121).
 - **선택 기준 개정 완료** — BPV·decode 트래픽 가중 점수. "선택 기준" 절 참고.
@@ -18,7 +18,7 @@
 1. **전체 sweep을 새 기준으로 재실행** (~25분). 기존 `sweep.json`은 BPV·decode·생성 지표가
    없어서 리포트에 `-`로 나온다.
    ```powershell
-   .\.venv\Scripts\python.exe examples\scheme_sweep.py --cfg configs\sweep-phase1.yaml
+   .\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml
    ```
 2. 그 결과로 아래 "결정할 것"을 확정하고 Phase 2(real quant reference) 진입.
 
@@ -51,10 +51,10 @@
 ```powershell
 cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
 .\.venv\Scripts\python.exe -m pytest tests -q                                       # 119개
-.\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\llama3.2-1b-w8a16.yaml   # 단일 ~1분
-.\.venv\Scripts\python.exe examples\scheme_sweep.py --cfg configs\sweep-phase1.yaml    # 전체 ~25분
-.\.venv\Scripts\python.exe examples\bench_gemm.py                                      # GEMM 속도
-.\.venv\Scripts\python.exe examples\analyze_sweep.py experiments\phase1-sweep\sweep.json --bpv-weight 5
+.\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\phase1\w8a16.yaml   # 단일 ~1분
+.\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml    # 전체 ~25분
+.\.venv\Scripts\python.exe examples\phase4_bench_gemm.py                                      # GEMM 속도
+.\.venv\Scripts\python.exe examples\phase1_analyze.py experiments\phase1-sweep\sweep.json --bpv-weight 5
 ```
 - 패키지 재설치: `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"` (ninja 포함)
 - PowerShell에서 `$env:PYTHONIOENCODING="utf-8"` 권장.
@@ -251,60 +251,76 @@ sweep:                  # 선택. 있으면 교차곱으로 확장
 
 ## 프로젝트 구조
 
-llm-compressor 구조 + gaia-compressor의 config/파이프라인 레이어. `src/llmquant/` 패키지(`pip install -e ".[dev]"`).
+**core / stages / eval 3층.** phase별 폴더를 쓰되, phase에 진짜로 속하는 것만 나눴다 —
+지금 코드의 대부분은 여러 phase가 공유하므로 억지로 가르면 오히려 찾기 어려워진다.
+
+- **`core/`** — 모든 stage가 공유. config, scheme, scale 계산, quant-dequant 연산,
+  모델을 갈아끼우는 modifier, 비용 지표. **stage를 module 레벨에서 import하지 않는다.**
+- **`stages/`** — phase당 폴더 1개. `mode` config 값과 1:1로 대응해서
+  "mode=real이면 어떤 코드가 도는가"를 grep 없이 알 수 있다. 아직 없는 phase의 폴더는
+  거기 무엇이 들어올지와 통과 조건을 docstring으로 적어뒀다.
+- **`eval/`** — 측정과 판단. PPL, LAMBADA, 생성, GEMM 속도, 분석.
 
 ```
 llm-quant/
 ├── pyproject.toml, .gitignore
-├── docs/w4a8_rtn_notes.md               # 이 파일
-├── configs/*.yaml                       # 실행 config (llama3.2-1b-w4a8, w8a16, bf16, sweep-phase1)
+├── docs/w4a8_rtn_notes.md                  # 이 파일
+├── configs/phase1/                         # bf16-baseline, w4a8, w8a16, sweep
 ├── src/llmquant/
-│   ├── __init__.py                      # oneshot, QuantizationModifier, evaluate_ppl, generate
-│   ├── args/__init__.py                 # ModelArgs, DatasetArgs
-│   ├── args/quant_config.py             # QuantConfig(attn/mlp/head/activation/kv_cache/group_size)
-│   ├── args/parser.py                   # RunConfig, build_config(YAML+CLI), expand_sweep
-│   ├── args/selection.py                # SelectionConfig (PPL 제약 + 가중치)
-│   ├── datasets/wikitext.py             # get_eval_ids("wikitext2", tokenizer)
-│   ├── datasets/lambada.py              # get_lambada_examples(limit)
-│   ├── datasets/prompts.py              # GENERATION_PROMPTS (생성 비교용 고정 16개)
-│   ├── entrypoints/oneshot.py           # oneshot(model, recipe)
-│   ├── entrypoints/evaluate.py          # evaluate_ppl, generate, CLI(bf16 기준)
-│   ├── entrypoints/run.py               # run_one(config), run_generation(config) — 공통 경로
-│   ├── analysis.py                      # sweep 결과 분석 (순수 함수, GPU/모델 불필요)
-│   ├── benchmark.py                     # GEMM 연산 벤치 (bf16 vs int8 vs int8 g128)
-│   ├── modifiers/quantization/scheme.py # QuantizationArgs, QuantizationScheme, PRESET_SCHEMES
-│   ├── modifiers/quantization/modifier.py # QuantizationModifier(scheme, attn_scheme, mlp_scheme, lm_head_scheme, mode)
-│   ├── observers/minmax.py              # compute_scale: channel(weight) / token(activation), fp32
-│   ├── modules/fake_quant_linear.py     # FakeQuantLinear
-│   └── utils/quant_ops.py, model.py, size.py(model_metrics: 디스크·decode·BPV)
-├── src/llmquant/kernels/                # CUDA 커널 (JIT 빌드)
-│   ├── build.py                         # MSVC env + TMP/8.3 + ninja 설정, load_extension()
-│   ├── ops.py                           # fake_quantize_cuda(x, args, return_scale=False)
-│   └── csrc/fake_quant.cu, fake_quant.cpp
-├── examples/auto_llm.py                 # config 1개 실행
-├── examples/scheme_sweep.py             # Phase 1, sweep 그리드 확장 + 분석 리포트
-├── examples/analyze_sweep.py            # 저장된 sweep.json 재분석 (GPU 불필요)
-├── examples/bench_gemm.py               # GEMM 속도 측정
-├── tests/test_quantization.py           # 11개
-├── tests/test_cuda_kernel.py            # 41개 (bit-exact 검증)
-├── tests/test_config.py                 # 21개 (타깃 라우팅, bf16 규칙, activation 제한, kv_cache 슬롯)
-├── tests/test_parser.py                 # 21개 (YAML/CLI 우선순위, sweep 확장, selection)
-├── tests/test_analysis.py               # 13개 (손으로 계산한 값과 대조)
-├── tests/test_benchmark.py              # 4개
-├── tests/test_metrics.py                # 8개 (BPV, 디스크 vs decode 충돌)
-├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 초안 (컴파일 안 됨)
-├── results/                             # git 제외 (구 결과 보관)
-└── experiments/<project>/               # git 제외, config 복사 + result.json / sweep.json
+│   ├── __init__.py                         # QuantizationModifier, QuantConfig, oneshot, evaluate_ppl
+│   ├── core/
+│   │   ├── config.py                       # ModelArgs, DatasetArgs, QuantConfig(attn/mlp/head/activation/kv_cache/group_size)
+│   │   ├── parser.py                       # RunConfig, build_config(YAML+CLI), expand_sweep
+│   │   ├── selection.py                    # SelectionConfig (PPL 제약 + 가중치)
+│   │   ├── scheme.py                       # QuantizationArgs, QuantizationScheme, PRESET_SCHEMES
+│   │   ├── modifier.py                     # QuantizationModifier(scheme, attn_scheme, mlp_scheme, lm_head_scheme, mode)
+│   │   ├── observers.py                    # compute_scale (group / channel / token, fp32)
+│   │   ├── quant_ops.py                    # quantize, dequantize, fake_quantize ← 레퍼런스
+│   │   ├── metrics.py                      # model_metrics: 디스크 / decode 트래픽 / BPV
+│   │   ├── model.py, oneshot.py
+│   │   └── datasets/                       # wikitext, lambada, prompts
+│   ├── stages/
+│   │   ├── __init__.py                     # quant_linear_for(mode) — core가 지연 import
+│   │   ├── s1_fake/fake_quant_linear.py    # Phase 1  mode="fake"
+│   │   ├── s2_real/                        # Phase 2  mode="real"   (예정)
+│   │   ├── s3_pack/                        # Phase 3  packing/.bin  (예정)
+│   │   ├── s4_kernel/                      # Phase 4  mode="kernel"
+│   │   │   ├── build.py                    #   MSVC env + TMP/8.3 + ninja, load_extension()
+│   │   │   ├── ops.py                      #   fake_quantize_cuda(x, args, return_scale=False)
+│   │   │   └── csrc/fake_quant.cu, .cpp
+│   │   └── s5_chat/                        # Phase 5  채팅          (예정)
+│   └── eval/
+│       ├── evaluate.py                     # evaluate_ppl, evaluate_lambada, greedy_continuations, generation_agreement
+│       ├── run.py                          # run_one, run_generation — 단일 실행과 sweep의 공통 경로
+│       ├── analysis.py                     # pareto / axis_effects / interactions / 가중 점수
+│       └── benchmark.py                    # GEMM 벤치 (bf16 vs int8 vs int8 g128)
+├── examples/
+│   ├── auto_llm.py                         # config 1개 실행 (phase 무관)
+│   ├── phase1_sweep.py                     # 그리드 확장 + 2단계 평가 + 분석 리포트
+│   ├── phase1_analyze.py                   # 저장된 sweep.json 재분석 (GPU 불필요)
+│   └── phase4_bench_gemm.py                # GEMM 속도 측정
+├── tests/                                  # 119개
+│   ├── test_quantization.py  11            ├── test_cuda_kernel.py  41 (bit-exact)
+│   ├── test_config.py        21            ├── test_parser.py       21
+│   ├── test_analysis.py      13            ├── test_metrics.py       8 (디스크 vs decode 충돌)
+│   └── test_benchmark.py      4
+├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 잔재 (지워도 됨)
+├── results/                                # git 제외 (구 결과 보관)
+└── experiments/<project>/                  # git 제외, config 복사 + result.json / sweep.json
 ```
+
+**의존 방향은 `core → stages`가 한 군데뿐이다**: `modifier.apply()`가 `mode`에 맞는 Linear
+클래스를 `stages.quant_linear_for()`로 받아온다. 이걸 module 레벨에서 import하면
+core가 stage에 묶여버리므로 함수 안에서 지연 import한다.
 
 사용 예시:
 ```bash
-python examples/auto_llm.py --cfg configs/llama3.2-1b-w4a8.yaml
-python examples/auto_llm.py --cfg configs/llama3.2-1b-w4a8.yaml --mlp-weight int8   # CLI가 이김
-python examples/scheme_sweep.py --cfg configs/sweep-phase1.yaml
+python examples/auto_llm.py --cfg configs/phase1/w4a8.yaml
+python examples/auto_llm.py --cfg configs/phase1/w4a8.yaml --mlp-weight int8   # CLI가 이김
+python examples/phase1_sweep.py --cfg configs/phase1/sweep.yaml
 ```
 ```python
-from llmquant.args import QuantConfig
+from llmquant import QuantConfig, oneshot
 recipe = QuantConfig(attn_weight="int8", mlp_weight="int4", activation="int8").to_modifier()
 oneshot(model, recipe)
 ```
@@ -398,7 +414,7 @@ A8은 어떤 weight 조합 위에서도 **+0.07~0.16%p**만 낸다. int8 GEMM �
 - **아직 안 본 영역: attn과 mlp를 다르게 주는 조합.** 이 모델은 decoder Linear 파라미터의
   **82.8%가 MLP**(레이어당 50.33M / 60.82M)다. `mlp_weight: int4` + `attn_weight: int8` 같은
   조합이 크기 이득 대부분을 가져가면서 정확도를 지킬 수 있는지는 측정된 바 없다.
-  구 sweep은 이걸 표현할 수 없었고, `configs/sweep-phase1.yaml`(16런)이 바로 이 영역을 덮는다.
+  구 sweep은 이걸 표현할 수 없었고, `configs/phase1/sweep.yaml`(16런)이 바로 이 영역을 덮는다.
 
 ## sweep 분석 (`llmquant/analysis.py`)
 
@@ -406,7 +422,7 @@ sweep 결과를 받아 **bit 조합 결정에 필요한 비교**를 자동으로
 저장된 `sweep.json`만 있으면 GPU도 모델도 없이 다시 돌릴 수 있다:
 
 ```bash
-python examples/analyze_sweep.py experiments/phase1-sweep/sweep.json --limit-ratio 1.05
+python examples/phase1_analyze.py experiments/phase1-sweep/sweep.json --limit-ratio 1.05
 ```
 
 리포트 구성:
@@ -436,7 +452,7 @@ baseline은 그리드 밖에 있어서, 모든 런이 attn·mlp를 둘 다 양�
 재면 fake quant 오버헤드에 오염되지 않은 숫자가 나오고, Phase 4를 기다릴 필요도 없다.
 
 ```bash
-python examples/bench_gemm.py --m 1 64 512 2048
+python examples/phase4_bench_gemm.py --m 1 64 512 2048
 ```
 
 ### 측정 결과 (RTX 5060 Ti, sm_120, torch 2.11+cu128, TF32 off)
@@ -515,7 +531,7 @@ selection:
 
 - 하드 제약을 통과한 것 중 점수 최대를 고른다. `selection`을 안 주면 **옛 규칙**(최소 크기)으로
   떨어져서 과거 sweep이 같은 답을 재현한다.
-- 가중치를 바꿔가며 재분석 가능: `analyze_sweep.py --bpv-weight 5 --speed-weight 3`
+- 가중치를 바꿔가며 재분석 가능: `phase1_analyze.py --bpv-weight 5 --speed-weight 3`
 - ⚠️ **정확도 지표가 없으면 0으로 치지 않는다.** baseline에서 직접 유도하고, 그것도 안 되면
   `score_missing`에 기록한다. (구현 중 테스트가 잡은 버그 — 0으로 치면 가장 공격적인 조합이
   항상 이긴다.)

@@ -8,10 +8,10 @@ the kernel, because Phase 4 checks whole-model PPL for exact equality.
 import pytest
 import torch
 
-from llmquant.modifiers.quantization import QuantizationArgs
-from llmquant.modifiers.quantization.scheme import GROUP_SIZE
-from llmquant.observers import compute_scale
-from llmquant.utils.quant_ops import fake_quantize
+from llmquant.core import QuantizationArgs
+from llmquant.core.scheme import GROUP_SIZE
+from llmquant.core.observers import compute_scale
+from llmquant.core.quant_ops import fake_quantize
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 
@@ -20,7 +20,7 @@ DTYPES = [torch.bfloat16, torch.float16, torch.float32]
 
 @pytest.fixture(scope="module")
 def cuda_fake_quantize():
-    from llmquant.kernels import fake_quantize_cuda
+    from llmquant.stages.s4_kernel import fake_quantize_cuda
 
     return fake_quantize_cuda
 

@@ -23,4 +23,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # the JIT build compiles these from the installed package
-llmquant = ["kernels/csrc/*.cu", "kernels/csrc/*.cpp"]
+llmquant = ["stages/s4_kernel/csrc/*.cu", "stages/s4_kernel/csrc/*.cpp"]

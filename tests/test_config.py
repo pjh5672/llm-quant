@@ -1,10 +1,10 @@
 import pytest
 import torch.nn as nn
 
-from llmquant.args import QuantConfig
-from llmquant.args.quant_config import BF16, dtype_to_args, normalize_dtype
-from llmquant.modifiers.quantization.scheme import GROUP_SIZE
-from llmquant.modules import FakeQuantLinear
+from llmquant.core.config import QuantConfig
+from llmquant.core.config import BF16, dtype_to_args, normalize_dtype
+from llmquant.core.scheme import GROUP_SIZE
+from llmquant.stages.s1_fake import FakeQuantLinear
 
 
 @pytest.mark.parametrize("value,expected", [(None, BF16), ("bf16", BF16), ("INT4", "int4"), (" int8 ", "int8")])
@@ -114,7 +114,7 @@ def test_activation_rejects_int4():
 def test_sweep_grid_with_int4_activation_is_rejected(tmp_path):
     import yaml
 
-    from llmquant.args.parser import build_config, expand_sweep
+    from llmquant.core.parser import build_config, expand_sweep
 
     path = tmp_path / "cfg.yaml"
     path.write_text(

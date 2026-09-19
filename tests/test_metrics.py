@@ -3,8 +3,8 @@
 import pytest
 import torch.nn as nn
 
-from llmquant.args import QuantConfig
-from llmquant.utils.size import BF16_BITS, bits_per_element, model_metrics
+from llmquant.core.config import QuantConfig
+from llmquant.core.metrics import BF16_BITS, bits_per_element, model_metrics
 
 GROUP = 128
 

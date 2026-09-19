@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from llmquant.benchmark import (
+from llmquant.eval.benchmark import (
     INT_MM_MIN_M,
     LLAMA_1B_SHAPES,
     benchmark_shape,

@@ -3,11 +3,11 @@ import torch
 import torch.nn as nn
 
 from llmquant import QuantizationModifier
-from llmquant.modifiers.quantization import QuantizationArgs, preset_name_to_scheme
-from llmquant.modifiers.quantization.scheme import GROUP_SIZE
-from llmquant.modules import FakeQuantLinear
-from llmquant.observers import compute_scale, group_view
-from llmquant.utils.quant_ops import fake_quantize, quantize
+from llmquant.core import QuantizationArgs, preset_name_to_scheme
+from llmquant.core.scheme import GROUP_SIZE
+from llmquant.stages.s1_fake import FakeQuantLinear
+from llmquant.core.observers import compute_scale, group_view
+from llmquant.core.quant_ops import fake_quantize, quantize
 
 
 @pytest.mark.parametrize("bits", [4, 8])
@@ -96,7 +96,7 @@ def test_modifier_replaces_targets_and_respects_lm_head_scheme():
 
 
 def test_size_accounts_for_one_scale_per_group():
-    from llmquant.utils.size import SCALE_BYTES, _linear_bytes
+    from llmquant.core.metrics import SCALE_BYTES, _linear_bytes
 
     linear = nn.Linear(4 * GROUP_SIZE, 32, bias=False)
     scheme = preset_name_to_scheme("W4A16")
