@@ -44,10 +44,21 @@ def test_group_size_equal_to_k_reproduces_per_channel():
     assert torch.equal(fake_quantize(w, channel), fake_quantize(w, grouped))
 
 
-def test_group_size_must_divide_last_dim():
+def test_a_short_tail_is_padded_into_its_own_group():
     args = QuantizationArgs(num_bits=8, strategy="group", group_size=GROUP_SIZE)
-    with pytest.raises(ValueError, match="not divisible"):
-        compute_scale(torch.randn(4, 100), args)
+    x = torch.randn(4, 100)
+    assert compute_scale(x, args).shape == (4, 1, 1)  # 100 -> one padded group
+    assert fake_quantize(x, args).shape == x.shape  # and the padding is dropped again
+
+
+def test_padding_is_numerically_free():
+    """Zero padding cannot move a symmetric abs-max, so a padded short group quantizes
+    exactly as a group of its own real length would."""
+    torch.manual_seed(0)
+    x = torch.randn(4, 64)
+    padded = QuantizationArgs(num_bits=4, strategy="group", group_size=128)
+    exact = QuantizationArgs(num_bits=4, strategy="group", group_size=64)
+    assert torch.equal(fake_quantize(x, padded), fake_quantize(x, exact))
 
 
 def test_group_size_is_required_and_exclusive():

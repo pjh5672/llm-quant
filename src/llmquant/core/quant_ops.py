@@ -1,7 +1,7 @@
 import torch
 
 from llmquant.core.scheme import QuantizationArgs
-from llmquant.core.observers import compute_scale, group_view
+from llmquant.core.observers import compute_scale, group_view, ungroup
 
 
 def quantize(x: torch.Tensor, scale: torch.Tensor, args: QuantizationArgs) -> torch.Tensor:
@@ -20,5 +20,8 @@ def dequantize(q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
 def fake_quantize(x: torch.Tensor, args: QuantizationArgs) -> torch.Tensor:
     """Reference quant-dequant. The CUDA kernel in llmquant.stages.s4_kernel must match bit-exactly."""
     scale = compute_scale(x, args)
-    xv = group_view(x, args.group_size) if args.strategy == "group" else x
-    return dequantize(quantize(xv, scale, args), scale).reshape(x.shape).to(x.dtype)
+    if args.strategy != "group":
+        return dequantize(quantize(x, scale, args), scale).to(x.dtype)
+    view = group_view(x, args.group_size, args.head_dim)
+    out = dequantize(quantize(view, scale, args), scale)
+    return ungroup(out, x.shape, args.group_size, args.head_dim).to(x.dtype)

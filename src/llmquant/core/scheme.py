@@ -12,6 +12,9 @@ class QuantizationArgs:
     symmetric: bool = True
     dynamic: bool = False
     group_size: int | None = None
+    # Set only for o_proj, whose K axis is heads x head_dim rather than a flat hidden
+    # size. Grouping then happens inside each head instead of straddling two of them.
+    head_dim: int | None = None
 
     def __post_init__(self):
         if self.strategy == "group":

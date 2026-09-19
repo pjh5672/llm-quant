@@ -91,7 +91,17 @@ cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
   섞여 causal 구조가 깨지는 것, batch에 따라 결과가 달라지는 것 — 은 **여기 해당되지 않음.**
   causal·batch-invariant 유지됨.
 - weight group과 축·경계가 같아야 int GEMM이 성립함. 그래서 축 선택지는 사실상 K축뿐.
-- **모든 Linear의 in_features는 2048 또는 8192** (k/v_proj도 in=2048)이라 128로 나누어떨어짐. 패딩 불필요.
+- **패딩 정책 (2026-09-19)**: 마지막 축이 128의 배수가 아니면 **뒤에 0을 붙여** 채운다.
+  zero padding은 symmetric abs-max에서 **scale을 바꾸지 못하므로**(0은 `max(|x|)`에 영향 없음)
+  실제 원소는 짧은 그룹으로 양자화한 것과 **비트 단위로 같다.** 바뀌는 건 회계(그룹 수)뿐이다.
+  덕분에 "어디서나 group 128"이라는 규칙 하나로 통일된다.
+- **o_proj만 head 단위로 그룹을 끊는다.** o_proj의 입력은 attention 출력을 이어붙인 것이라
+  K축이 `heads × head_dim`(32 × 64)이다. 평범한 128 그룹은 **두 head를 한 그룹에 섞어** 서로
+  다른 dynamic range가 scale을 공유하게 만든다. head별로 쪼개고 64를 128로 패딩한다.
+  - 효과(실측, o_proj 입력): 평균 절대오차 **0.1026 → 0.0922 (약 10% 감소)**
+  - 비용: o_proj scale이 2배(그룹 16 → 32). 전체 디스크 0.9708 → 0.9728 GB (+2MB)
+  - **weight와 activation 양쪽 모두** head 단위로 끊어야 int GEMM의 부분합 분해가 성립한다.
+- 그 외 Linear의 in_features는 2048 또는 8192라 128로 나누어떨어져 패딩이 발생하지 않는다.
 
 **영향**
 - 크기: decoder Linear 973M개 → scale 376K개에서 7.6M개로. fp32 기준 약 1.5MB → 약 30MB (W4 모델 대비 +3%).
@@ -254,8 +264,9 @@ sweep:                  # 선택. 있으면 교차곱으로 확장
 **구현**: `stages/s1_fake/fake_quant_cache.py::FakeQuantCache` — `DynamicCache`를 상속해
 K/V를 쓰는 시점에 fake quant한다. `generate(past_key_values=...)`로 주입.
 
-- **그룹은 head_dim(64)이다. weight의 group_size 128을 쓸 수 없다** — 그룹이 축보다 클 수 없다.
-  KV 양자화의 표준 granularity(토큰별·헤드별)와도 일치한다.
+- **그룹은 128, 64짜리 head는 패딩해서 채운다.** 위 패딩 정책과 같은 규칙이고, 결과는
+  head_dim(64)로 그룹을 끊은 것과 **비트 단위로 동일**하다. KV 양자화의 표준 granularity
+  (토큰별·헤드별)와도 일치한다.
 - **이미 캐시에 있는 토큰은 다시 양자화하지 않는다.** 재양자화하면 스텝마다 오차가 누적된다.
 
 **비용은 디스크가 아니라 컨텍스트에 비례한다** (Llama-3.2-1B, `decode_bytes_at_context`):

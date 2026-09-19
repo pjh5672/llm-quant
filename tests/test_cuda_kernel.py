@@ -85,7 +85,15 @@ def test_rejects_bad_inputs(cuda_fake_quantize):
     args = QuantizationArgs(num_bits=8, strategy="group", group_size=GROUP_SIZE)
     with pytest.raises(RuntimeError, match="must be a CUDA tensor"):
         cuda_fake_quantize(torch.randn(4, GROUP_SIZE), args)
-    with pytest.raises(RuntimeError, match="not divisible"):
-        cuda_fake_quantize(torch.randn(4, 100, device="cuda"), args)
     with pytest.raises(RuntimeError, match="float32, float16 or bfloat16"):
         cuda_fake_quantize(torch.randn(4, GROUP_SIZE, device="cuda").double(), args)
+
+
+def test_padded_shapes_still_match_the_reference(cuda_fake_quantize):
+    """A last axis that is not a multiple of the group size gets the same zero padding on
+    both sides, so the two must still agree bit for bit."""
+    torch.manual_seed(0)
+    args = QuantizationArgs(num_bits=8, strategy="group", group_size=GROUP_SIZE)
+    for shape in [(4, 100), (2, 3, 64), (8, 192)]:
+        x = torch.randn(*shape, device="cuda", dtype=torch.bfloat16)
+        assert torch.equal(cuda_fake_quantize(x, args), fake_quantize(x, args)), shape

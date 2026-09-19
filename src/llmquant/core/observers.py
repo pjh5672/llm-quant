@@ -5,12 +5,50 @@ from llmquant.core.scheme import QuantizationArgs
 SCALE_EPS = 1e-8
 
 
-def group_view(x: torch.Tensor, group_size: int) -> torch.Tensor:
-    """Split the last (reduction) axis into groups: [..., K] -> [..., K // group_size, group_size]."""
-    k = x.shape[-1]
-    if k % group_size:
-        raise ValueError(f"last dim {k} is not divisible by group_size {group_size}")
-    return x.reshape(*x.shape[:-1], k // group_size, group_size)
+def pad_to_group(x: torch.Tensor, group_size: int) -> torch.Tensor:
+    """Zero-pad the last axis up to a multiple of group_size.
+
+    Zeros are safe here and nowhere near arbitrary: the scale is a symmetric abs-max, and
+    max(|x|) does not see a zero. So the real elements quantize exactly as they would in a
+    group of their own (shorter) length -- padding changes the bookkeeping, not the numbers.
+    A short tail therefore costs accuracy only in the sense that it shares a scale with
+    nothing, which is the same thing a shorter group would do.
+    """
+    remainder = x.shape[-1] % group_size
+    if not remainder:
+        return x
+    return torch.nn.functional.pad(x, (0, group_size - remainder))
+
+
+def group_view(x: torch.Tensor, group_size: int, head_dim: int | None = None) -> torch.Tensor:
+    """Split the last (reduction) axis into groups, padding a short tail.
+
+    [..., K] -> [..., ceil(K / group_size), group_size]
+
+    With head_dim set, the axis is first split into heads and each head is grouped on its
+    own. o_proj is the case that needs it: its input is the concatenated attention output,
+    so K is heads x head_dim, and a flat group of 128 would straddle two 64-wide heads and
+    force them to share a scale. Each head is padded up to a whole group instead.
+    """
+    if head_dim is None:
+        padded = pad_to_group(x, group_size)
+        return padded.reshape(*padded.shape[:-1], padded.shape[-1] // group_size, group_size)
+
+    lead, k = x.shape[:-1], x.shape[-1]
+    if k % head_dim:
+        raise ValueError(f"last dim {k} is not a multiple of head_dim {head_dim}")
+    per_head = pad_to_group(x.reshape(*lead, k // head_dim, head_dim), group_size)
+    return per_head.reshape(*lead, -1, group_size)
+
+
+def ungroup(y: torch.Tensor, shape, group_size: int, head_dim: int | None = None) -> torch.Tensor:
+    """Undo group_view: flatten the groups back and drop whatever padding was added."""
+    lead, k = tuple(shape[:-1]), shape[-1]
+    if head_dim is None:
+        return y.reshape(*lead, -1)[..., :k]
+    padded_head = -(-head_dim // group_size) * group_size
+    per_head = y.reshape(*lead, k // head_dim, padded_head)
+    return per_head[..., :head_dim].reshape(*lead, k)
 
 
 def compute_scale(x: torch.Tensor, args: QuantizationArgs) -> torch.Tensor:
@@ -23,7 +61,7 @@ def compute_scale(x: torch.Tensor, args: QuantizationArgs) -> torch.Tensor:
     qmax = 2 ** (args.num_bits - 1) - 1
     xf = x.float()
     if args.strategy == "group":
-        amax = group_view(xf, args.group_size).abs().amax(dim=-1, keepdim=True)
+        amax = group_view(xf, args.group_size, args.head_dim).abs().amax(dim=-1, keepdim=True)
     elif args.strategy in ("channel", "token"):
         amax = xf.abs().amax(dim=-1, keepdim=True)
     else:

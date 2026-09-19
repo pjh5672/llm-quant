@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch.nn as nn
 
@@ -8,6 +8,9 @@ from llmquant.core.scheme import QuantizationScheme, preset_name_to_scheme
 # Llama naming. attn_scheme / mlp_scheme are what the config's attn_weight / mlp_weight map to.
 ATTN_PATTERN = r"re:.*\.self_attn\..*_proj$"
 MLP_PATTERN = r"re:.*\.mlp\..*_proj$"
+# o_proj is the only Linear whose input carries head structure: it consumes the
+# concatenated attention output, so its K axis is heads x head_dim.
+O_PROJ_PATTERN = r"re:.*\.self_attn\.o_proj$"
 
 
 def _resolve(scheme):
@@ -43,6 +46,31 @@ class QuantizationModifier:
     # KV cache bit width, already resolved; None keeps the cache in bf16. Not a scheme:
     # the cache is grouped by head_dim, not by the weight group size.
     kv_cache_bits: int | None = None
+    # filled in from the model by resolve(); drives the o_proj grouping
+    head_dim: int | None = None
+
+    def resolve(self, model) -> "QuantizationModifier":
+        """Read the head size off the model. Called before apply() and before costing."""
+        config = getattr(model, "config", None)
+        if config is not None and self.head_dim is None:
+            head_dim = getattr(config, "head_dim", None)
+            if head_dim is None and getattr(config, "num_attention_heads", None):
+                head_dim = config.hidden_size // config.num_attention_heads
+            self.head_dim = head_dim
+        return self
+
+    def _head_aware(self, scheme):
+        """Same scheme, but grouped inside each head instead of across two of them."""
+        if scheme is None or not self.head_dim:
+            return scheme
+        return QuantizationScheme(
+            weights=replace(scheme.weights, head_dim=self.head_dim) if scheme.weights else None,
+            input_activations=(
+                replace(scheme.input_activations, head_dim=self.head_dim)
+                if scheme.input_activations
+                else None
+            ),
+        )
 
     def scheme_for(self, name: str) -> QuantizationScheme | None:
         """Scheme that applies to the Linear called `name`, or None to keep it bf16."""
@@ -51,7 +79,8 @@ class QuantizationModifier:
         if _matches(name, self.ignore):
             return None
         if self.attn_scheme is not None and _matches(name, (ATTN_PATTERN,)):
-            return _resolve(self.attn_scheme)
+            scheme = _resolve(self.attn_scheme)
+            return self._head_aware(scheme) if _matches(name, (O_PROJ_PATTERN,)) else scheme
         if self.mlp_scheme is not None and _matches(name, (MLP_PATTERN,)):
             return _resolve(self.mlp_scheme)
         return _resolve(self.scheme)
@@ -62,6 +91,7 @@ class QuantizationModifier:
         from llmquant.stages import quant_linear_for
 
         quant_cls = quant_linear_for(self.mode)
+        self.resolve(model)
 
         replacements = []
         for name, module in model.named_modules():

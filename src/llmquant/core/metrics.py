@@ -32,9 +32,14 @@ BF16_BITS = BF16_BYTES * 8
 def _num_scales(linear: nn.Linear, args) -> int:
     """One scale per output channel, times the number of groups along in_features."""
     if args.strategy == "group":
-        if linear.in_features % args.group_size:
-            raise ValueError(f"in_features {linear.in_features} not divisible by group_size {args.group_size}")
-        return linear.out_features * (linear.in_features // args.group_size)
+        # a short tail still gets its own scale, because it is padded up to a full group
+        if args.head_dim:
+            # grouped inside each head, so a 64-wide head costs a whole 128 group
+            heads = linear.in_features // args.head_dim
+            groups = heads * -(-args.head_dim // args.group_size)
+        else:
+            groups = -(-linear.in_features // args.group_size)
+        return linear.out_features * groups
     return linear.out_features
 
 
@@ -68,6 +73,8 @@ def _scheme_of(recipe, name, module):
 
 def model_metrics(model: nn.Module, recipe: QuantizationModifier | None) -> dict:
     """All three cost metrics in one walk. Call on the unmodified bf16 model."""
+    if recipe is not None:
+        recipe.resolve(model)
     lm_head = model.get_output_embeddings()
     embed = model.get_input_embeddings()
     tied = lm_head.weight is embed.weight

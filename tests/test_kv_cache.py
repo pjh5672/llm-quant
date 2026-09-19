@@ -26,17 +26,27 @@ def test_update_stores_quantized_keys_and_values(bits):
     keys, values = torch.randn(*SHAPE), torch.randn(*SHAPE)
     cached_keys, cached_values = FakeQuantCache(bits).update(keys, values, 0)
 
-    args = QuantizationArgs(num_bits=bits, strategy="group", group_size=HEAD_DIM, dynamic=True)
+    args = QuantizationArgs(num_bits=bits, strategy="group", group_size=128, dynamic=True)
     assert torch.equal(cached_keys, fake_quantize(keys, args))
     assert torch.equal(cached_values, fake_quantize(values, args))
     assert not torch.equal(cached_keys, keys)  # something actually happened
 
 
-def test_group_is_the_head_dimension_not_the_weight_group_size():
-    # head_dim is 64 here and the weight group size is 128; a group cannot exceed its axis
+def test_the_group_is_128_with_a_short_head_padded_up_to_it():
     cache = FakeQuantCache(8)
-    assert cache._args(torch.randn(*SHAPE)).group_size == HEAD_DIM
-    assert cache._args(torch.randn(1, 2, 5, 32)).group_size == 32
+    assert cache._args(torch.randn(*SHAPE)).group_size == 128
+
+
+@pytest.mark.parametrize("bits", [4, 8])
+def test_padding_a_64_wide_head_to_128_changes_nothing(bits):
+    """Zero padding cannot move a symmetric abs-max, so this matches grouping at head_dim."""
+    torch.manual_seed(0)
+    keys = torch.randn(*SHAPE)
+    padded, _ = FakeQuantCache(bits).update(keys.clone(), keys.clone(), 0)
+    exact = fake_quantize(
+        keys, QuantizationArgs(num_bits=bits, strategy="group", group_size=HEAD_DIM, dynamic=True)
+    )
+    assert torch.equal(padded, exact)
 
 
 def test_fewer_bits_cost_more_error():

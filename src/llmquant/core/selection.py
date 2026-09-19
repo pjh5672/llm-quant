@@ -18,12 +18,20 @@ class SelectionConfig:
     # hard limit on the accuracy drop, in percent of the bf16 score. None disables it.
     acc_drop_limit_pct: float | None = 5.0
 
+    # Priority: decode throughput first, then prefill latency, then accuracy.
+    #
+    # decode_speed scores `decode_gb_at_context`, not the measured TPS. Decode is memory
+    # bound, so bytes read per token is what throughput tracks, and it is the only decode
+    # number that separates the combinations before a real kernel exists -- under mode=fake
+    # every combination stores dequantized bf16 weights and measures the same TPS.
+    #
+    # bpv is deliberately small: at short context it is almost collinear with decode
+    # traffic, so a large weight would double-count the same win. It survives as a
+    # tie-breaker that still rewards pure compression.
+    decode_speed_weight: float = 4.0
+    prefill_speed_weight: float = 2.0
     accuracy_weight: float = 1.0
-    bpv_weight: float = 2.0
-    decode_speed_weight: float = 2.0
-    # 0 by default: TTFT is only measured on request, because under mode=fake every
-    # combination runs the same bf16 GEMM and the measurement cannot separate them
-    prefill_speed_weight: float = 0.0
+    bpv_weight: float = 0.5
     generation_weight: float = 1.0  # stage-2 agreement, when no task score exists
     # decode traffic is weights + the whole KV cache, so it depends on how much context
     # you care about. At 2k the weights dominate; past a few thousand the cache does.

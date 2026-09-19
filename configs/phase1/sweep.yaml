@@ -21,10 +21,11 @@ evaluation:
   task_limit: 300         # 300 keeps a 24-run grid near an hour; null uses each task default
   ppl: true               # secondary: cheap and comparable, but teacher-forced
   metric: wikitext2
-  # TTFT/TPS measured on the fake-quant path cannot separate the combinations: every one
-  # of them stores dequantized bf16 weights and moves the same bytes. BPV and
-  # decode_gb_per_token carry the speed signal instead. Turn this on at Phase 3/4.
-  latency: false
+  # TTFT and TPS are measured and reported, but they cannot separate the combinations yet:
+  # every one stores dequantized bf16 weights, so they move the same bytes and run the same
+  # bf16 GEMM. Shown anyway -- a flat column is a result, not a gap. The score uses the
+  # analytic decode traffic instead, which does separate them.
+  latency: true
   latency_prompt_tokens: 512
   latency_new_tokens: 64
   generation: true        # stage 2 on the shortlist: LAMBADA + agreement with bf16
@@ -35,11 +36,12 @@ selection:
   # decode traffic is weights plus the whole KV cache, so it depends on the context length
   # you care about. At 2k the weights dominate; past a few thousand the cache does.
   context_tokens: 2048
-  acc_drop_limit_pct: 5.0
+  acc_drop_limit_pct: 5.0     # hard guard; the weights only rank what passes it
+  # priority: decode throughput > prefill latency > accuracy
+  decode_speed_weight: 4.0    # scores decode_gb_at_context, the throughput proxy
+  prefill_speed_weight: 2.0   # scores TTFT; flat until a real kernel exists
   accuracy_weight: 1.0
-  bpv_weight: 2.0
-  decode_speed_weight: 2.0
-  prefill_speed_weight: 0.0   # only meaningful once latency is measured on a real stage
+  bpv_weight: 0.5             # near-collinear with decode traffic, kept as a tie-breaker
 
 sweep:
   attn_weight: [int4, int8]
