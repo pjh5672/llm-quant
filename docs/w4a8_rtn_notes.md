@@ -121,7 +121,7 @@ cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
 | 0 | 환경, bf16 baseline | ✅ PPL 13.1642 |
 | 1 | **fake quant**(bf16 dequant) 조합 비교 → bf16 대비 성능 저하 → 최적 조합 선택 | ✅ 완료 (9조합 + attn/mlp 16조합) |
 
-| 2 | **real quant** reference: packing 안 한 int weight + 검증된 PyTorch 연산(A8: `torch._int_mm`, A16: dequant→bf16 matmul)으로 PPL 측정 | fake와 real의 PPL 차이가 작음 (크면 버그) |
+| 2 | **real quant** reference: packing 안 한 int weight + group별 정수 누적 | ✅ **통과** — fake 13.2019 vs real 13.2027 (차이 0.006%) |
 | 3 | **packing → bin 파일 저장 → Python 로드** | 로드한 정수와 scale이 Phase 2와 bit-exact |
 | 4 | **custom CUDA 커널**이 packing 데이터를 직접 읽어서 연산 | op별 출력이 Phase 2와 bit-exact, 전체 PPL 완전 동일, 속도·VRAM 측정 |
 | 5 | 채팅 | 정상 대화 |
@@ -707,6 +707,44 @@ weight 오차가 커진다. 실측:
 | v_proj | 1.56x | 1.55x |
 
 `qkv_out_scale_per_head: false`로 끄면 레이아웃 정렬은 유지하면서 이 정확도 비용만 없앨 수 있다.
+
+## Phase 2 real quant (2026-09-19 완료) — `stages/s2_real/`
+
+**qdq가 아니다.** s1_fake는 dequant한 bf16 weight를 들고 평범한 bf16 matmul을 돌려서 정확도 비용만
+잰다. 여기서는 weight를 **정수로 들고 정수로 곱한다** — Phase 4 커널이 재현해야 할 산술이다.
+
+    A16  group마다 weight를 dequant해서 fp32로 누적
+    A8   activation을 토큰·group별로 양자화 → group 안에서 int32 누적 → scale 곱 → 부분합 합산
+
+    y[m,n] = Σ_g  s_x[m,g] · s_w[n,g] · Σ_{k∈g} a[m,k]·q[n,k]
+
+### 통과 조건 ✅
+| | fake | real | 차이 |
+|---|---|---|---|
+| wikitext2 PPL (W8A8) | 13.2019 | 13.2027 | **0.006%** |
+
+레이어 단위로 보면 **real이 fake보다 일관되게 정확하다**(W8A16 기준 오차 0.00212 → 0.00195).
+fake는 양쪽을 bf16으로 반올림하고 거기서 누적하는데, real은 정수를 정확히 누적하고 group당 한 번만
+scale을 곱하기 때문이다. **둘이 같아야 하는 게 아니라 real이 조금 더 정확한 게 맞다.**
+
+### 왜 fp32 matmul로 충분한가
+group 128이면 부분합 최대치가 `128 × 127 × 127 = 2,064,512`로 fp32의 정확 정수 범위(2^24) 안이다.
+따라서 **정수 값에 대한 fp32 matmul은 곧 정수 연산**이고 int32 경로가 필요 없다.
+K=8192 전체를 누적하면 1.3억까지 올라가 그 범위를 벗어나는데, 이것도 그룹을 축 끝까지 끌지 않고
+128에서 끊는 이유 중 하나다.
+
+### ⚠️ TF32 관련 기존 서술 정정
+노트에 "TF32는 꺼야 함"이라고 적어뒀었는데 **측정해보니 int8 입력에서는 영향이 없다.**
+TF32의 가수는 11비트이고 `|int8| ≤ 127 < 2^11`이라 입력이 정확히 표현되며, 누적은 어차피 fp32다.
+실제로 최악 케이스(±127로 채운 group)에서도 TF32 on/off 결과가 동일했다.
+TF32가 깨뜨리는 건 **11비트를 넘는 입력**일 때뿐이다(4097을 넣으면 128만큼 틀림).
+`exact_fp32_matmul()` 가드는 그래서 **보험이지 필수가 아니다** — 입력이 11비트를 넘게 되면 그때
+필수가 된다.
+
+### 속도
+real은 fake보다 **3.5배 느리다**(PPL 76s → 268s). group마다 matmul을 따로 돌리기 때문이고,
+**이게 바로 Phase 4 커널이 하나로 fuse해야 하는 이유다.** 레퍼런스의 목적은 속도가 아니라
+커널을 검증할 오라클을 만드는 것이다.
 
 ## packing 저장 형식 (확정)
 

@@ -52,7 +52,7 @@ def test_unknown_section_and_key_are_rejected(tmp_path):
 @pytest.mark.parametrize(
     "section,key,value,match",
     [
-        ("quantization", "mode", "real", "only 'fake' exists"),
+        ("quantization", "mode", "kernel", "only 'fake' and 'real' exist"),
         ("quantization", "quant_method", "gptq", "only calibration-free"),
         ("defaults", "pack", True, "pack is not implemented"),
         ("defaults", "load_packed", "x.bin", "load_packed is not implemented"),
@@ -63,6 +63,11 @@ def test_unimplemented_slots_raise_instead_of_no_op(tmp_path, section, key, valu
     cfg[section][key] = value
     with pytest.raises(NotImplementedError, match=match):
         build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
+
+
+def test_real_mode_is_accepted(tmp_path):
+    cfg = {"defaults": {"project": "p"}, "quantization": {"mode": "real"}}
+    assert build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path).mode == "real"
 
 
 def test_no_quantize_yields_no_modifier(tmp_path):

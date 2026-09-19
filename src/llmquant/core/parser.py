@@ -57,10 +57,10 @@ class RunConfig:
                 f"quant_method={self.quant_method!r}: only calibration-free 'rtn' exists. "
                 "The slot is kept so the schema is stable."
             )
-        if self.mode != "fake":
+        if self.mode not in ("fake", "real"):
             raise NotImplementedError(
-                f"mode={self.mode!r}: only 'fake' exists so far "
-                "('real' is Phase 2, 'kernel' is Phase 4; see docs/w4a8_rtn_notes.md)."
+                f"mode={self.mode!r}: only 'fake' and 'real' exist so far "
+                "('kernel' is Phase 4; see docs/w4a8_rtn_notes.md)."
             )
         for flag, phase in (("pack", "Phase 3"), ("load_packed", "Phase 4")):
             if getattr(self, flag):

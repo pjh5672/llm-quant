@@ -23,8 +23,12 @@ def quant_linear_for(mode: str):
         from llmquant.stages.s1_fake import FakeQuantLinear
 
         return FakeQuantLinear
+    if mode == "real":
+        from llmquant.stages.s2_real import RealQuantLinear
+
+        return RealQuantLinear
     raise ValueError(f"unsupported mode {mode!r}, expected one of {sorted(AVAILABLE_MODES)}")
 
 
-AVAILABLE_MODES = frozenset({"fake"})
-PLANNED_MODES = {"real": "Phase 2 (s2_real)", "kernel": "Phase 4 (s4_kernel)"}
+AVAILABLE_MODES = frozenset({"fake", "real"})
+PLANNED_MODES = {"kernel": "Phase 4 (s4_kernel)"}
