@@ -91,8 +91,8 @@ class TinyLlama(nn.Module):
         layer.self_attn.o_proj = nn.Linear(K, K, bias=False)
         layer.mlp = nn.Module()
         layer.mlp.down_proj = nn.Linear(K, K, bias=False)
-        self.model.embed_tokens = nn.Embedding(8, K)
-        self.lm_head = nn.Linear(K, 8, bias=False)
+        self.model.embed_tokens = nn.Embedding(GROUP, K)
+        self.lm_head = nn.Linear(K, GROUP, bias=False)
         self.lm_head.weight = self.model.embed_tokens.weight
 
     def get_input_embeddings(self):

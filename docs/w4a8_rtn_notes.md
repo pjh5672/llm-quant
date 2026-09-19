@@ -14,7 +14,7 @@
 - **GEMM 속도 측정 완료** — "속도 측정" 절. A8 전제가 흔들림.
 - **생성 태스크 추가 완료** — ARC-Easy(기본) / GSM8K. "생성 평가" 절 참고.
 - **정확도 기준을 생성 태스크로 교체, TTFT/TPS 실측 추가.** "선택 기준"·"지연 측정" 절 참고.
-- 테스트 **156개** 통과. 커밋 4개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
+- 테스트 **190개** 통과. 커밋 4개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
 
 ### 바로 다음에 할 일
 1. **전체 sweep을 새 기준으로 재실행** (~25분). 기존 `sweep.json`은 BPV·decode·생성 지표가
@@ -308,6 +308,7 @@ llm-quant/
 │   │   ├── selection.py                    # SelectionConfig (PPL 제약 + 가중치)
 │   │   ├── scheme.py                       # QuantizationArgs, QuantizationScheme, PRESET_SCHEMES
 │   │   ├── modifier.py                     # QuantizationModifier(scheme, attn_scheme, mlp_scheme, lm_head_scheme, mode)
+│   │   ├── layout.py                       # WeightLayout — 패딩·그룹·scale 기하의 단일 정의
 │   │   ├── observers.py                    # compute_scale (group / channel / token, fp32)
 │   │   ├── quant_ops.py                    # quantize, dequantize, fake_quantize ← 레퍼런스
 │   │   ├── metrics.py                      # model_metrics: 디스크 / decode 트래픽 / BPV
@@ -335,11 +336,12 @@ llm-quant/
 │   ├── phase1_analyze.py                   # 저장된 sweep.json 재분석 (GPU 불필요)
 │   ├── phase1_generation.py                # 끝난 sweep에 stage 2(생성 평가)만 얹기
 │   └── phase4_bench_gemm.py                # GEMM 속도 측정
-├── tests/                                  # 156개
+├── tests/                                  # 190개
 │   ├── test_quantization.py  11            ├── test_cuda_kernel.py  41 (bit-exact)
 │   ├── test_config.py        21            ├── test_parser.py       27
 │   ├── test_analysis.py      15            ├── test_metrics.py       8 (디스크 vs decode 충돌)
-│   ├── test_tasks.py         24 (채점 파싱) ├── test_report.py        5
+│   ├── test_tasks.py         24 (채점 파싱) ├── test_report.py        8
+│   ├── test_grouping.py      13 (패딩/head) ├── test_kv_cache.py      8
 │   └── test_benchmark.py      4
 ├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 잔재 (지워도 됨)
 ├── results/                                # git 제외 (구 결과 보관)
@@ -648,6 +650,63 @@ prefill과 decode를 **따로** 잰다. 서로 다른 regime이라 한쪽만 좋
 - **peak VRAM**도 같이 기록한다 (fake 모드에서는 조합 간 차이가 없지만 Phase 3~4에서 의미가 생긴다).
 
 ⚠️ **GPU가 한가할 때 재야 한다.** 다른 작업과 같은 GPU를 쓰면 값이 무의미하게 낮아진다.
+
+## 레이아웃 명세 (2026-09-19 확정) — `core/layout.py`
+
+**fake-quant → real-quant → pack → 추론이 전부 같은 정의를 써야 정합성이 보장된다.**
+그래서 기하(패딩·그룹·scale 개수)를 `llmquant/core/layout.py::WeightLayout` 한 곳에 모았고,
+각 단계는 거기서 읽는다. 흩어져 있으면 packing과 커널이 어긋나도 **조용히 틀린 값**이 나온다.
+
+### 규칙
+
+| module | reduction(in) 축 | output 축 |
+|---|---|---|
+| q/k/v_proj | 128 배수로 **끝 패딩** | **head별 분할**, head_dim을 128 배수로 패딩 |
+| o_proj | **head별 분할**, head_dim을 128 배수로 패딩 | 128 배수로 끝 패딩 |
+| mlp, lm_head | 128 배수로 끝 패딩 | 128 배수로 끝 패딩 |
+
+q/k/v는 head를 **만들어내서** out축에 head 구조가 있고, o_proj는 head를 **소비해서** in축에 있다.
+head별로 끊으면 dynamic range가 다른 두 head가 scale을 공유하지 않는다.
+
+**scale 위치**: q/k/v는 **output head당 1개**(`out_group = head_dim`), 나머지는 output 행당 1개.
+reduction 축으로는 전부 그룹당 1개.
+
+### 비용 — ⚠️ head_dim이 64라 attention이 전부 2배가 된다
+
+패딩 자체는 **수치적으로 공짜**다(0은 symmetric abs-max를 못 바꾸므로 실제 원소는 짧은 그룹으로
+양자화한 것과 비트 단위로 같다). 공짜가 아닌 건 **저장 용량**이다.
+
+| module | [out, in] | 패딩 후 | 슬롯 | int8 vs bf16 |
+|---|---|---|---|---|
+| q_proj | [2048, 2048] | [**4096**, 2048] | 2.00x | **1.00x** |
+| k/v_proj | [512, 2048] | [**1024**, 2048] | 2.00x | **1.00x** |
+| o_proj | [2048, 2048] | [2048, **4096**] | 2.00x | **1.00x** |
+| mlp | [8192, 2048] | [8192, 2048] | 1.00x | 0.50x |
+
+**int8 attention은 bf16과 바이트가 똑같다.** 64짜리 head를 128 타일에 넣으면 행(또는 열)이
+2배가 되는데 int8의 비트 절감도 정확히 2배라 서로 상쇄된다. int4는 4배가 아니라 2배만 절감한다.
+MLP는 head 구조가 없어서 영향이 없다.
+
+| 조합 | 디스크 | BPV | (q/k/v out패딩 껐을 때) |
+|---|---|---|---|
+| bf16 | 2.3019 GB | 16.00 | - |
+| attn·mlp int8 | 1.5793 GB | 10.977 | 1.4884 GB |
+| attn·mlp int4 | 1.0480 GB | 7.284 | 1.0040 GB |
+
+**BPV는 패딩을 센다** (`bits_per_real_element`). 실제 원소당 비트로 계산하지 않으면 디스크가
+90MB 움직여도 BPV가 그대로라 지표가 거짓말을 한다.
+
+### 정확도 비용 (out축 head 단위 scale)
+q/k/v의 scale을 행당 1개에서 **head당 1개**로 묶으면 scale이 64배 줄고(32768 → 512)
+weight 오차가 커진다. 실측:
+
+| module | int8 | int4 |
+|---|---|---|
+| q_proj | 2.71x | 2.62x |
+| k_proj | 2.37x | 2.32x |
+| v_proj | 1.56x | 1.55x |
+
+`qkv_out_scale_per_head: false`로 끄면 레이아웃 정렬은 유지하면서 이 정확도 비용만 없앨 수 있다.
 
 ## packing 저장 형식 (확정)
 

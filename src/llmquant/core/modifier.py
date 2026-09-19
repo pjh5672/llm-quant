@@ -11,6 +11,8 @@ MLP_PATTERN = r"re:.*\.mlp\..*_proj$"
 # o_proj is the only Linear whose input carries head structure: it consumes the
 # concatenated attention output, so its K axis is heads x head_dim.
 O_PROJ_PATTERN = r"re:.*\.self_attn\.o_proj$"
+# q/k/v are the mirror image: their *output* axis is heads x head_dim.
+QKV_PATTERN = r"re:.*\.self_attn\.[qkv]_proj$"
 
 
 def _resolve(scheme):
@@ -48,6 +50,10 @@ class QuantizationModifier:
     kv_cache_bits: int | None = None
     # filled in from the model by resolve(); drives the o_proj grouping
     head_dim: int | None = None
+    # one scale per q/k/v output head instead of per output row. Matches a format that
+    # stores a scale per output tile, and costs accuracy: measured 2.6x the weight error
+    # on q_proj. Turn off to keep the finer per-row scales.
+    qkv_out_scale_per_head: bool = True
 
     def resolve(self, model) -> "QuantizationModifier":
         """Read the head size off the model. Called before apply() and before costing."""
@@ -72,6 +78,15 @@ class QuantizationModifier:
             ),
         )
 
+    def _out_head_aware(self, scheme):
+        """One scale per output head. Only the weight: an activation has no output axis."""
+        if scheme is None or not self.head_dim or scheme.weights is None:
+            return scheme
+        return QuantizationScheme(
+            weights=replace(scheme.weights, out_group=self.head_dim),
+            input_activations=scheme.input_activations,
+        )
+
     def scheme_for(self, name: str) -> QuantizationScheme | None:
         """Scheme that applies to the Linear called `name`, or None to keep it bf16."""
         if name == "lm_head":
@@ -80,7 +95,11 @@ class QuantizationModifier:
             return None
         if self.attn_scheme is not None and _matches(name, (ATTN_PATTERN,)):
             scheme = _resolve(self.attn_scheme)
-            return self._head_aware(scheme) if _matches(name, (O_PROJ_PATTERN,)) else scheme
+            if _matches(name, (O_PROJ_PATTERN,)):
+                return self._head_aware(scheme)  # head structure on the reduction axis
+            if _matches(name, (QKV_PATTERN,)) and self.qkv_out_scale_per_head:
+                return self._out_head_aware(scheme)  # head structure on the output axis
+            return scheme
         if self.mlp_scheme is not None and _matches(name, (MLP_PATTERN,)):
             return _resolve(self.mlp_scheme)
         return _resolve(self.scheme)

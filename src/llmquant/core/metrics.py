@@ -22,6 +22,7 @@ nothing; past a few thousand tokens it becomes the larger term.
 
 import torch.nn as nn
 
+from llmquant.core.layout import WeightLayout, layout_for
 from llmquant.core.modifier import QuantizationModifier
 
 SCALE_BYTES = 4  # fp32 scale
@@ -29,18 +30,34 @@ BF16_BYTES = 2
 BF16_BITS = BF16_BYTES * 8
 
 
+def _padded_out_features(linear: nn.Linear, args) -> int:
+    """Rows the packed layout actually holds.
+
+    With out_group set, each block of out_group rows is padded up to a whole group so the
+    output tiles land on head boundaries. A 64-wide head in a 128 tile therefore doubles
+    what q/k/v cost on disk -- accuracy is unaffected, only the layout.
+    """
+    if not getattr(args, "out_group", None):
+        return linear.out_features
+    blocks = -(-linear.out_features // args.out_group)
+    return blocks * max(args.out_group, args.group_size)
+
+
+def _layout(linear: nn.Linear, args) -> WeightLayout:
+    return layout_for(linear.out_features, linear.in_features, args)
+
+
 def _num_scales(linear: nn.Linear, args) -> int:
-    """One scale per output channel, times the number of groups along in_features."""
-    if args.strategy == "group":
-        # a short tail still gets its own scale, because it is padded up to a full group
-        if args.head_dim:
-            # grouped inside each head, so a 64-wide head costs a whole 128 group
-            heads = linear.in_features // args.head_dim
-            groups = heads * -(-args.head_dim // args.group_size)
-        else:
-            groups = -(-linear.in_features // args.group_size)
-        return linear.out_features * groups
-    return linear.out_features
+    """One scale per (scale row, reduction group). See llmquant.core.layout for the rules."""
+    if args.strategy != "group":
+        return linear.out_features
+    return _layout(linear, args).num_scales
+
+
+def _padded_out_features(linear: nn.Linear, args) -> int:
+    if args.strategy != "group":
+        return linear.out_features
+    return _layout(linear, args).padded_out
 
 
 def bits_per_element(num_bits: int | None, group_size: int | None) -> float:
@@ -54,15 +71,20 @@ def _linear_bytes(linear: nn.Linear, scheme):
     if scheme is None or scheme.weights is None:
         return linear.weight.numel() * BF16_BYTES
     args = scheme.weights
-    return linear.weight.numel() * args.num_bits // 8 + _num_scales(linear, args) * SCALE_BYTES
+    if args.strategy != "group":
+        return linear.weight.numel() * args.num_bits // 8 + _num_scales(linear, args) * SCALE_BYTES
+    layout = _layout(linear, args)
+    return layout.weight_bytes(args.num_bits) + layout.num_scales * SCALE_BYTES
 
 
 def _linear_bpv(linear: nn.Linear, scheme) -> float:
+    """Bits paid per *real* weight, so layout padding shows up instead of hiding."""
     if scheme is None or scheme.weights is None:
         return float(BF16_BITS)
     args = scheme.weights
-    group = args.group_size if args.strategy == "group" else linear.in_features
-    return bits_per_element(args.num_bits, group)
+    if args.strategy != "group":
+        return bits_per_element(args.num_bits, linear.in_features)
+    return _layout(linear, args).bits_per_real_element(args.num_bits, SCALE_BYTES)
 
 
 def _scheme_of(recipe, name, module):

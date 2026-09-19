@@ -51,6 +51,26 @@ def ungroup(y: torch.Tensor, shape, group_size: int, head_dim: int | None = None
     return per_head[..., :head_dim].reshape(*lead, k)
 
 
+def out_block_view(x: torch.Tensor, out_group: int) -> torch.Tensor:
+    """Block the *output* axis so a tile of rows can share one scale.
+
+    [out, ...] -> [ceil(out / out_group), out_group, ...], zero-padding a short tail. The
+    padding is free for the same reason it is on the reduction axis: a zero cannot move a
+    symmetric abs-max.
+    """
+    out = x.shape[0]
+    remainder = out % out_group
+    if remainder:
+        pad = [0, 0] * (x.dim() - 1) + [0, out_group - remainder]
+        x = torch.nn.functional.pad(x, pad)
+    return x.reshape(-1, out_group, *x.shape[1:])
+
+
+def out_unblock(y: torch.Tensor, out: int) -> torch.Tensor:
+    """Undo out_block_view and drop the padded rows."""
+    return y.reshape(-1, *y.shape[2:])[:out]
+
+
 def compute_scale(x: torch.Tensor, args: QuantizationArgs) -> torch.Tensor:
     """Symmetric abs-max scale in fp32, keepdim so it broadcasts.
 
@@ -61,7 +81,12 @@ def compute_scale(x: torch.Tensor, args: QuantizationArgs) -> torch.Tensor:
     qmax = 2 ** (args.num_bits - 1) - 1
     xf = x.float()
     if args.strategy == "group":
-        amax = group_view(xf, args.group_size, args.head_dim).abs().amax(dim=-1, keepdim=True)
+        view = group_view(xf, args.group_size, args.head_dim)
+        if args.out_group:
+            # reduce over the output tile as well, so its rows share one scale
+            amax = out_block_view(view, args.out_group).abs().amax(dim=(1, -1), keepdim=True)
+        else:
+            amax = view.abs().amax(dim=-1, keepdim=True)
     elif args.strategy in ("channel", "token"):
         amax = xf.abs().amax(dim=-1, keepdim=True)
     else:

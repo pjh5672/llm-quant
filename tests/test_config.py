@@ -85,8 +85,8 @@ class TinyLlama(nn.Module):
         layer.self_attn.q_proj = nn.Linear(GROUP_SIZE, GROUP_SIZE, bias=False)
         layer.mlp = nn.Module()
         layer.mlp.down_proj = nn.Linear(GROUP_SIZE, GROUP_SIZE, bias=False)
-        self.model.embed_tokens = nn.Linear(GROUP_SIZE, 8, bias=False)
-        self.lm_head = nn.Linear(GROUP_SIZE, 8, bias=False)
+        self.model.embed_tokens = nn.Linear(GROUP_SIZE, GROUP_SIZE, bias=False)
+        self.lm_head = nn.Linear(GROUP_SIZE, GROUP_SIZE, bias=False)
 
 
 @pytest.mark.parametrize(

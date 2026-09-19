@@ -15,6 +15,10 @@ class QuantizationArgs:
     # Set only for o_proj, whose K axis is heads x head_dim rather than a flat hidden
     # size. Grouping then happens inside each head instead of straddling two of them.
     head_dim: int | None = None
+    # Output channels that share one scale. None means one scale per channel, the finest
+    # option. Set to head_dim for q/k/v_proj, whose out axis is heads x head_dim, when the
+    # target format stores one scale per output tile rather than per row.
+    out_group: int | None = None
 
     def __post_init__(self):
         if self.strategy == "group":

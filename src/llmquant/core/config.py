@@ -69,6 +69,9 @@ class QuantConfig:
     activation: str = BF16
     kv_cache: str = BF16
     group_size: int = GROUP_SIZE
+    # q/k/v store one scale per output head rather than per output row. Matches a format
+    # with one scale per output tile; measured cost is 2.6x the q_proj weight error.
+    qkv_out_scale_per_head: bool = True
 
     def __post_init__(self):
         if not isinstance(self.group_size, int) or self.group_size <= 0:
@@ -112,6 +115,7 @@ class QuantConfig:
             mlp_scheme=self.scheme("mlp_weight"),
             lm_head_scheme=self.scheme("head_weight"),
             kv_cache_bits=self.kv_cache_bits,
+            qkv_out_scale_per_head=self.qkv_out_scale_per_head,
             mode=mode,
         )
 

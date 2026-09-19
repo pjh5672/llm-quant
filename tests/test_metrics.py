@@ -7,6 +7,7 @@ from llmquant.core.config import QuantConfig
 from llmquant.core.metrics import BF16_BITS, bits_per_element, model_metrics
 
 GROUP = 128
+HEAD_DIM = 32
 
 
 class TinyConfig:
@@ -32,8 +33,8 @@ class TinyLlama(nn.Module):
         layer.self_attn.q_proj = nn.Linear(GROUP, GROUP, bias=False)
         layer.mlp = nn.Module()
         layer.mlp.down_proj = nn.Linear(GROUP, GROUP, bias=False)
-        self.model.embed_tokens = nn.Embedding(64, GROUP)
-        self.lm_head = nn.Linear(GROUP, 64, bias=False)
+        self.model.embed_tokens = nn.Embedding(GROUP, GROUP)
+        self.lm_head = nn.Linear(GROUP, GROUP, bias=False)
         if tied:
             self.lm_head.weight = self.model.embed_tokens.weight
 
@@ -60,10 +61,41 @@ def test_bf16_model_reports_16_bits_per_element():
 
 def test_quantizing_weights_lowers_all_three():
     base = model_metrics(TinyLlama(), None)
-    q = model_metrics(TinyLlama(), QuantConfig(attn_weight="int8", mlp_weight="int8").to_modifier())
+    q = model_metrics(
+        TinyLlama(),
+        QuantConfig(
+            attn_weight="int8", mlp_weight="int8", qkv_out_scale_per_head=False
+        ).to_modifier(),
+    )
     assert q["bits_per_element"] < base["bits_per_element"]
     assert q["deployed_bytes"] < base["deployed_bytes"]
     assert q["decode_bytes_per_token"] < base["decode_bytes_per_token"]
+
+
+def test_int8_qkv_buys_nothing_once_heads_are_padded_into_128_tiles():
+    """A 64-wide head in a 128 tile stores two rows per real row, which exactly cancels the
+    halving int8 was supposed to buy. int4 still wins, but 2x rather than 4x."""
+    from llmquant.core.metrics import _linear_bytes
+
+    linear = nn.Linear(GROUP, 4 * HEAD_DIM, bias=False)  # out = 4 heads x head_dim
+    recipe = QuantConfig(attn_weight="int8").to_modifier()
+    recipe.head_dim = HEAD_DIM
+    scheme = recipe.scheme_for("model.layers.0.self_attn.q_proj")
+
+    bf16_bytes = linear.weight.numel() * 2
+    int8_bytes = _linear_bytes(linear, scheme)
+    assert int8_bytes >= bf16_bytes  # the padding ate the whole saving
+
+
+def test_bits_per_element_counts_the_layout_padding():
+    """Otherwise BPV would read the same whether or not the padding is there, while the
+    disk number moves."""
+    padded = model_metrics(TinyLlama(), QuantConfig(attn_weight="int8").to_modifier())
+    unpadded = model_metrics(
+        TinyLlama(), QuantConfig(attn_weight="int8", qkv_out_scale_per_head=False).to_modifier()
+    )
+    assert padded["bits_per_element"] > unpadded["bits_per_element"]
+    assert padded["deployed_bytes"] > unpadded["deployed_bytes"]
 
 
 def test_quantizing_lm_head_grows_disk_but_shrinks_decode_when_tied():

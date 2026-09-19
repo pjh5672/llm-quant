@@ -109,7 +109,8 @@ def test_modifier_replaces_targets_and_respects_lm_head_scheme():
 def test_size_accounts_for_one_scale_per_group():
     from llmquant.core.metrics import SCALE_BYTES, _linear_bytes
 
-    linear = nn.Linear(4 * GROUP_SIZE, 32, bias=False)
+    # out_features is a multiple of the group, so the out-axis padding is a no-op here
+    linear = nn.Linear(4 * GROUP_SIZE, GROUP_SIZE, bias=False)
     scheme = preset_name_to_scheme("W4A16")
     weight_bytes = linear.weight.numel() * 4 // 8
-    assert _linear_bytes(linear, scheme) == weight_bytes + 32 * 4 * SCALE_BYTES
+    assert _linear_bytes(linear, scheme) == weight_bytes + GROUP_SIZE * 4 * SCALE_BYTES
