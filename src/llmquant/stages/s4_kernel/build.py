@@ -123,7 +123,11 @@ def load_extension(verbose: bool = False):
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", CUDA_ARCH)
     return load(
         name="llmquant_kernels",
-        sources=[str(CSRC / "fake_quant.cpp"), str(CSRC / "fake_quant.cu")],
+        sources=[
+            str(CSRC / "fake_quant.cpp"),
+            str(CSRC / "fake_quant.cu"),
+            str(CSRC / "wq_gemv.cu"),
+        ],
         extra_cflags=CXX_FLAGS,
         extra_cuda_cflags=CUDA_FLAGS,
         verbose=verbose,

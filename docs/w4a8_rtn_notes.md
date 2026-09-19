@@ -14,7 +14,7 @@
 - **GEMM 속도 측정 완료** — "속도 측정" 절. A8 전제가 흔들림.
 - **생성 태스크 추가 완료** — ARC-Easy(기본) / GSM8K. "생성 평가" 절 참고.
 - **정확도 기준을 생성 태스크로 교체, TTFT/TPS 실측 추가.** "선택 기준"·"지연 측정" 절 참고.
-- 테스트 **190개** 통과. 커밋 4개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
+- 테스트 **227개** 통과. 커밋 4개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
 
 ### 바로 다음에 할 일
 1. **전체 sweep을 새 기준으로 재실행** (~25분). 기존 `sweep.json`은 BPV·decode·생성 지표가
@@ -123,7 +123,7 @@ cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
 
 | 2 | **real quant** reference: packing 안 한 int weight + group별 정수 누적 | ✅ **통과** — fake 13.2019 vs real 13.2027 (차이 0.006%) |
 | 3 | **packing → bin 파일 저장 → Python 로드** | 로드한 정수와 scale이 Phase 2와 bit-exact |
-| 4 | **custom CUDA 커널**이 packing 데이터를 직접 읽어서 연산 | op별 출력이 Phase 2와 bit-exact, 전체 PPL 완전 동일, 속도·VRAM 측정 |
+| 4 | **custom CUDA 커널**이 int weight를 직접 읽어서 연산 | ✅ weight-only 완료 — M≤4에서 Phase 2와 `torch.equal`. decode 1.11x, VRAM −34% |
 | 5 | 채팅 | 정상 대화 |
 
 - **최적 조합 선택 기준**: bf16 대비 PPL 증가 5% 이내(≈13.82 이하) 조합 중 모델 크기가 가장 작은 것. (A8/A16 구분이 안 되는 문제 있음 → 위 "결정할 것" 2번)
@@ -317,12 +317,13 @@ llm-quant/
 │   ├── stages/
 │   │   ├── __init__.py                     # quant_linear_for(mode) — core가 지연 import
 │   │   ├── s1_fake/fake_quant_linear.py    # Phase 1  mode="fake"
-│   │   ├── s2_real/                        # Phase 2  mode="real"   (예정)
+│   │   ├── s2_real/real_quant_linear.py    # Phase 2  mode="real" — 정수 weight, group별 정수 누적
 │   │   ├── s3_pack/                        # Phase 3  packing/.bin  (예정)
 │   │   ├── s4_kernel/                      # Phase 4  mode="kernel"
 │   │   │   ├── build.py                    #   MSVC env + TMP/8.3 + ninja, load_extension()
 │   │   │   ├── ops.py                      #   fake_quantize_cuda(x, args, return_scale=False)
-│   │   │   └── csrc/fake_quant.cu, .cpp
+│   │   │   ├── quant_linear.py             #   KernelQuantLinear — M으로 커널/cuBLAS 디스패치
+│   │   │   └── csrc/fake_quant.cu, wq_gemv.cu, fake_quant.cpp
 │   │   └── s5_chat/                        # Phase 5  채팅          (예정)
 │   └── eval/
 │       ├── evaluate.py                     # ppl / lambada / 생성태스크 / 일치도 / measure_latency
@@ -336,12 +337,13 @@ llm-quant/
 │   ├── phase1_analyze.py                   # 저장된 sweep.json 재분석 (GPU 불필요)
 │   ├── phase1_generation.py                # 끝난 sweep에 stage 2(생성 평가)만 얹기
 │   └── phase4_bench_gemm.py                # GEMM 속도 측정
-├── tests/                                  # 190개
+├── tests/                                  # 227개
 │   ├── test_quantization.py  11            ├── test_cuda_kernel.py  41 (bit-exact)
 │   ├── test_config.py        21            ├── test_parser.py       27
 │   ├── test_analysis.py      15            ├── test_metrics.py       8 (디스크 vs decode 충돌)
 │   ├── test_tasks.py         24 (채점 파싱) ├── test_report.py        8
 │   ├── test_grouping.py      13 (패딩/head) ├── test_kv_cache.py      8
+│   ├── test_real_quant.py    16 (Phase 2)   ├── test_kernel_linear.py 18 (Phase 4)
 │   └── test_benchmark.py      4
 ├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 잔재 (지워도 됨)
 ├── results/                                # git 제외 (구 결과 보관)
@@ -745,6 +747,65 @@ TF32가 깨뜨리는 건 **11비트를 넘는 입력**일 때뿐이다(4097을 �
 real은 fake보다 **3.5배 느리다**(PPL 76s → 268s). group마다 matmul을 따로 돌리기 때문이고,
 **이게 바로 Phase 4 커널이 하나로 fuse해야 하는 이유다.** 레퍼런스의 목적은 속도가 아니라
 커널을 검증할 오라클을 만드는 것이다.
+
+## Phase 4 커널 (2026-09-19) — `stages/s4_kernel/`
+
+### 무엇을 만들었나
+`csrc/wq_gemv.cu` — **weight-only 양자화 matmul.** int8 weight를 메모리에서 그대로 읽어
+레지스터에서 dequant하고, activation은 bf16으로 둔다. 커널은 `[N, groups, 128]` **canonical
+형태**만 받으므로 head 구조를 전혀 모른다 — 패딩과 head 분할은 `core/layout.py`가 이미 끝냈다.
+
+### 왜 weight-only인가 (int-int가 아니라)
+측정 결과 **`torch._int_mm`은 bf16 대비 1.03~1.04배**뿐이고 decode(M=1)는 int8 GEMM을 아예 못 쓴다.
+즉 이득은 int 연산이 아니라 **weight를 int로 직접 읽는 대역폭**에서 나온다.
+
+### M으로 디스패치 (crossover는 측정값)
+| M | kernel | fake | |
+|---|---|---|---|
+| **1 (decode)** | 0.013 ms | 0.030 ms | **2.37x 빠름** |
+| 2 | 0.017 | 0.018 | 1.06x |
+| 4+ | 0.025~ | 0.018 | 느림 |
+
+M=1에서 4MB/0.013ms = **308 GB/s**(피크의 69%). M이 커지면 compute 바운드라 텐서코어를 쓰는
+cuBLAS가 이기므로, `KERNEL_MAX_ROWS=4` 위에서는 weight를 한 번 dequant해서 cuBLAS에 넘긴다.
+dequant는 O(N·K)라 M행에 걸쳐 상각된다.
+
+### 정확도 — 두 경로가 각각 무엇과 일치하는가
+- **M ≤ 4 (커널 경로): Phase 2 레퍼런스와 `torch.equal`로 완전히 일치.** 허용치가 아니라 등식이다.
+- **M > 4 (cuBLAS 경로): fake quant와 오차가 정확히 같다.** 둘 다 bf16으로 dequant 후 bf16
+  matmul이라 같은 계산이다. 즉 대체한 경로보다 나쁘지도 좋지도 않다.
+
+네 가지 레이아웃(plain / int4 / o_proj head_dim / q_proj out_group) 전부에서 확인했다.
+
+### 전체 모델 실측 (Llama-3.2-1B, W8 attn·mlp·head)
+| | TTFT | decode | peak VRAM |
+|---|---|---|---|
+| fake | 48.3 ms | 74.7 tok/s | 2.91 GB |
+| **kernel** | 79.1 ms | **82.7 tok/s (1.11x)** | **1.91 GB (−34%)** |
+| bf16 | 58.0 ms | 77.9 tok/s | 2.42 GB |
+
+### ⚠️ op 단위 2.37배가 전체에서 1.11배가 된 이유
+**1B 모델의 decode는 weight 대역폭 바운드가 아니다.** 측정 대역폭 384 GB/s 기준으로:
+
+| | weight/token | 이론 최소 | 실측 토큰시간 | weight 비중 |
+|---|---|---|---|---|
+| bf16 | 2.302 GB | 6.00 ms | 13.25 ms | **45%** |
+| kernel int8 | 1.342 GB | 3.50 ms | 13.32 ms | 26% |
+
+토큰 시간의 45%만 weight 읽기이고 나머지는 커널 런치·attention·프레임워크 오버헤드다.
+weight를 절반으로 줄여도 **상한이 1.23배**이고 실측 1.11배는 그 안이다.
+**모델이 클수록 weight 비중이 커지므로 이 커널의 이득도 커진다.**
+
+### 남은 것
+- **TTFT가 48 → 79ms로 나빠진다.** prefill마다 weight를 dequant하는 비용이다. 이걸 없애려면
+  텐서코어 mainloop에서 dequant를 fuse해야 하는데(AWQ/Marlin 방식) 훨씬 큰 작업이다.
+  decode 우선순위가 1번, prefill이 2번이라 현재 트레이드오프는 우선순위와 맞다.
+- **int-int(A8) 커널**은 아직 없다. weight-only와 달리 **정수 합은 순서 무관**이라
+  레퍼런스와 bit-exact 검증이 가능하다는 장점이 있다. 커널이 group 합을 먼저 내고 scale을
+  나중에 곱하는 구조를 유지한 것이 이 때문이다.
+- 첫 시도 기록: M 루프를 weight 로드 바깥에 두어 weight를 M번 다시 읽었고 M=64에서 0.01배였다.
+  group마다 블록 전체 리덕션을 돈 것도 병목이었다. warp당 group 1개 + int32로 4개씩 읽기 +
+  마지막에 리덕션 1회로 바꿔 0.052 → 0.013ms가 됐다.
 
 ## packing 저장 형식 (확정)
 

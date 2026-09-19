@@ -52,7 +52,6 @@ def test_unknown_section_and_key_are_rejected(tmp_path):
 @pytest.mark.parametrize(
     "section,key,value,match",
     [
-        ("quantization", "mode", "kernel", "only 'fake' and 'real' exist"),
         ("quantization", "quant_method", "gptq", "only calibration-free"),
         ("defaults", "pack", True, "pack is not implemented"),
         ("defaults", "load_packed", "x.bin", "load_packed is not implemented"),
@@ -65,9 +64,16 @@ def test_unimplemented_slots_raise_instead_of_no_op(tmp_path, section, key, valu
         build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
 
 
-def test_real_mode_is_accepted(tmp_path):
-    cfg = {"defaults": {"project": "p"}, "quantization": {"mode": "real"}}
-    assert build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path).mode == "real"
+@pytest.mark.parametrize("mode", ["fake", "real", "kernel"])
+def test_every_implemented_mode_is_accepted(tmp_path, mode):
+    cfg = {"defaults": {"project": "p"}, "quantization": {"mode": mode}}
+    assert build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path).mode == mode
+
+
+def test_an_unknown_mode_is_rejected(tmp_path):
+    cfg = {"defaults": {"project": "p"}, "quantization": {"mode": "nope"}}
+    with pytest.raises(ValueError, match="unknown mode"):
+        build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
 
 
 def test_no_quantize_yields_no_modifier(tmp_path):
