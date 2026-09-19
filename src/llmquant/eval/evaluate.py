@@ -127,3 +127,34 @@ def generation_agreement(reference, candidate) -> dict:
         "generation_exact_match": exact / len(reference),
         "generation_first_divergence": sum(divergence_fractions) / len(divergence_fractions),
     }
+
+
+@torch.no_grad()
+def evaluate_generation_task(model, tokenizer, examples, score, max_new_tokens: int) -> float:
+    """Accuracy of generated answers against known ones.
+
+    The model writes tokens and they are matched, so this is an absolute score on the real
+    decode path -- unlike PPL and LAMBADA, which are teacher-forced single forward passes,
+    and unlike generation_agreement, which only measures divergence from bf16.
+
+    Unbatched on purpose: left padding a batch shifts positions and can change greedy
+    output, and here the output is the measurement.
+    """
+    device = next(model.parameters()).device
+    correct = 0
+    for example in examples:
+        messages = [{"role": "user", "content": example["prompt"]}]
+        inputs = tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors="pt", return_dict=True
+        ).to(device)
+        generated = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        text = tokenizer.decode(
+            generated[0, inputs["input_ids"].shape[1] :], skip_special_tokens=True
+        )
+        correct += bool(score(text, example))
+    return correct / len(examples)

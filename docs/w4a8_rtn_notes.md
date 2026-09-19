@@ -12,7 +12,8 @@
 - **선택 기준 개정 완료** — BPV·decode 트래픽 가중 점수. "선택 기준" 절 참고.
 - **생성 평가 추가 완료** — LAMBADA + bf16 대비 생성 일치도, 2단계 sweep. "생성 평가" 절 참고.
 - **GEMM 속도 측정 완료** — "속도 측정" 절. A8 전제가 흔들림.
-- 테스트 **119개** 통과. **첫 커밋 완료** (`5b2eda0`, master, 52 files).
+- **생성 태스크 추가 완료** — ARC-Easy(기본) / GSM8K. "생성 평가" 절 참고.
+- 테스트 **145개** 통과. 커밋 3개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
 
 ### 바로 다음에 할 일
 1. **전체 sweep을 새 기준으로 재실행** (~25분). 기존 `sweep.json`은 BPV·decode·생성 지표가
@@ -50,7 +51,7 @@
 ### 다시 시작하는 방법
 ```powershell
 cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
-.\.venv\Scripts\python.exe -m pytest tests -q                                       # 119개
+.\.venv\Scripts\python.exe -m pytest tests -q                                       # 145개
 .\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\phase1\w8a16.yaml   # 단일 ~1분
 .\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml    # 전체 ~25분
 .\.venv\Scripts\python.exe examples\phase4_bench_gemm.py                                      # GEMM 속도
@@ -219,6 +220,11 @@ quantization:
 
 evaluation:
   metric: wikitext2
+  generation: true        # stage 2 실행 여부
+  generation_task: arc_easy   # arc_easy | gsm8k | null
+  generation_task_limit: null # null이면 태스크 기본값 (arc 500, gsm8k 100)
+  lambada_limit: 500
+  max_new_tokens: 64
 
 sweep:                  # 선택. 있으면 교차곱으로 확장
   attn_weight: [int4, int8]
@@ -278,7 +284,7 @@ llm-quant/
 │   │   ├── quant_ops.py                    # quantize, dequantize, fake_quantize ← 레퍼런스
 │   │   ├── metrics.py                      # model_metrics: 디스크 / decode 트래픽 / BPV
 │   │   ├── model.py, oneshot.py
-│   │   └── datasets/                       # wikitext, lambada, prompts
+│   │   └── datasets/                       # wikitext, lambada, prompts, tasks(arc_easy/gsm8k)
 │   ├── stages/
 │   │   ├── __init__.py                     # quant_linear_for(mode) — core가 지연 import
 │   │   ├── s1_fake/fake_quant_linear.py    # Phase 1  mode="fake"
@@ -298,12 +304,13 @@ llm-quant/
 │   ├── auto_llm.py                         # config 1개 실행 (phase 무관)
 │   ├── phase1_sweep.py                     # 그리드 확장 + 2단계 평가 + 분석 리포트
 │   ├── phase1_analyze.py                   # 저장된 sweep.json 재분석 (GPU 불필요)
+│   ├── phase1_generation.py                # 끝난 sweep에 stage 2(생성 평가)만 얹기
 │   └── phase4_bench_gemm.py                # GEMM 속도 측정
-├── tests/                                  # 119개
+├── tests/                                  # 145개
 │   ├── test_quantization.py  11            ├── test_cuda_kernel.py  41 (bit-exact)
-│   ├── test_config.py        21            ├── test_parser.py       21
-│   ├── test_analysis.py      13            ├── test_metrics.py       8 (디스크 vs decode 충돌)
-│   └── test_benchmark.py      4
+│   ├── test_config.py        21            ├── test_parser.py       24
+│   ├── test_analysis.py      14            ├── test_metrics.py       8 (디스크 vs decode 충돌)
+│   ├── test_tasks.py         22 (채점 파싱) └── test_benchmark.py     4
 ├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 잔재 (지워도 됨)
 ├── results/                                # git 제외 (구 결과 보관)
 └── experiments/<project>/                  # git 제외, config 복사 + result.json / sweep.json
@@ -541,17 +548,40 @@ selection:
 PPL은 teacher-forced라 **생성 경로를 한 번도 안 건드린다.** 디코드 루프와 KV 캐시를 쓰는
 지표가 따로 필요하다.
 
-### 두 지표
+### 세 지표
+- **생성 태스크 정확도** (`generation_task`) — **실제로 토큰을 생성해서 정답과 맞추는 절대 지표.**
+  PPL·LAMBADA는 teacher-forced 단일 forward고, 생성 일치도는 상대 지표라 "얼마나 나빠졌나"를
+  못 말한다. 이 지표만 그 둘을 동시에 만족한다.
+
+  | 태스크 | 출처 | n(기본) | 생성 길이 | config당 | 노이즈 |
+  |---|---|---|---|---|---|
+  | **`arc_easy`** (기본) | `allenai/ai2_arc` ARC-Easy | 500 | 8토큰(정답 letter) | ~30초 | ±4%p |
+  | `gsm8k` | `openai/gsm8k` | 100 | 256토큰(CoT) | ~3분 | ±9%p |
+
+  GSM8K가 긴 CoT라 오차 누적을 더 잘 잡지만, 1B 모델은 점수가 낮아(~30%) 감당 가능한 n에서
+  **노이즈가 신호보다 크다.** 그래서 기본은 ARC-Easy.
+
+  ⚠️ **채점 파싱이 조용히 틀리기 쉬운 지점이다.** ARC는 영어 관사 `a`가 선택지 `A`로 오인될 수
+  있어서 **대소문자 일치를 먼저 시도**하고 없을 때만 fallback한다. GSM8K는 `####` 뒤 숫자를
+  우선 보고, 없으면 마지막 숫자로 떨어진다. 둘 다 `tests/test_tasks.py`로 고정.
+
 - **LAMBADA 마지막단어 정확도** — 로컬 캐시(`EleutherAI/lambada_openai`, 5153개).
   절대 수치. teacher-forced지만 **토큰 하나만 틀려도 예제 전체가 오답**이라 PPL보다 민감하다.
 - **bf16 대비 생성 일치도** — 고정 프롬프트 16개를 greedy 생성해서 bf16 출력과 비교.
   `generation_agreement`(토큰 일치율), `generation_exact_match`, `generation_first_divergence`.
-  라벨이 필요 없고, **디코드+KV캐시 경로를 전부 쓰는 유일한 평가**다.
-  greedy는 결정적이라 어긋남은 전부 양자화 오차다.
+  라벨이 필요 없다. greedy는 결정적이라 어긋남은 전부 양자화 오차다.
+  **"달라졌다"를 재지 "나빠졌다"를 재지 않으므로**, 가중 점수에서는 태스크 정확도가 있으면
+  그쪽을 쓰고 없을 때만 이걸 쓴다.
 
 ### 2단계 sweep
 전체 그리드는 PPL(런당 ~1분)로 거르고, **Pareto front + 기준 통과 조합에만** 생성 평가를
-돌린다(런당 ~15초, LAMBADA 100/32토큰 기준). 17조합 전부에 돌리면 1시간을 넘긴다.
+돌린다. 17조합 전부에 돌리면 1시간을 넘긴다.
+
+stage 1은 생성 지표를 추가해도 안 변하므로, **이미 끝난 sweep에 stage 2만 얹을 수 있다**:
+```bash
+python examples/phase1_generation.py experiments/phase1-sweep/sweep.json
+python examples/phase1_generation.py experiments/phase1-sweep/sweep.json --generation-task gsm8k
+```
 
 ### 스모크 결과 — ⚠️ PPL이 손상을 과소평가한다
 (LAMBADA 100개, 32토큰 — 본 실행보다 작은 설정. n=100은 노이즈 ±5%p)

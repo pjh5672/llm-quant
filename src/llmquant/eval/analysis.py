@@ -207,19 +207,22 @@ def format_report(summary) -> str:
 
     generation = [r for r in rows if "lambada_acc" in r]
     if generation:
+        task = next((r["task"] for r in generation if r.get("task")), "task")
         out.append("")
         out.append("== generation (stage 2, shortlist only) ==")
         out.append(
-            f"{'':<5}{header}  {'LAMBADA':>8} {'agree':>7} {'exact':>7} {'1st div':>8}"
+            f"{'':<5}{header}  {task:>9} {'LAMBADA':>8} {'agree':>7} {'exact':>7} {'1st div':>8}"
         )
         for r in sorted(generation, key=lambda r: r["ppl"]):
             out.append(
-                f"{'':<5}{_row_label(r)}  {r['lambada_acc']:>8.4f} "
+                f"{'':<5}{_row_label(r)}  {_fmt(r.get('task_acc'), '9.4f')} "
+                f"{r['lambada_acc']:>8.4f} "
                 f"{_fmt(r.get('generation_agreement'), '7.4f')} "
                 f"{_fmt(r.get('generation_exact_match'), '7.4f')} "
                 f"{_fmt(r.get('generation_first_divergence'), '8.4f')}"
             )
-        out.append("  agree = token agreement with the bf16 model's greedy output;")
+        out.append(f"  {task} = generated answers matched against the known ones (absolute)")
+        out.append("  agree = token agreement with the bf16 model's greedy output (relative);")
         out.append("  1st div = mean position of the first divergence, as a fraction of the output")
 
     out.append("")
@@ -325,7 +328,11 @@ def score_rows(rows, selection):
             accuracy_cost = 0.0
             missing.append("ppl_increase_pct")
         cost = accuracy_cost * selection.accuracy_weight
-        if "generation_agreement" in r:
+        # an absolute task score beats a divergence rate: agreement says the output
+        # changed, the task says whether it got worse
+        if base is not None and "task_acc" in r and "task_acc" in base:
+            cost += (base["task_acc"] - r["task_acc"]) * 100 * selection.generation_weight
+        elif "generation_agreement" in r:
             cost += (1 - r["generation_agreement"]) * 100 * selection.generation_weight
         r["score"] = sum(gains.values()) - cost
         r["score_missing"] = missing

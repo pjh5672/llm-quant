@@ -1,5 +1,6 @@
 from llmquant.core.datasets.lambada import get_lambada_examples
 from llmquant.core.datasets.prompts import GENERATION_PROMPTS
+from llmquant.core.datasets.tasks import TASKS, get_generation_task
 from llmquant.core.datasets.wikitext import get_wikitext2_test_ids
 
 EVAL_DATASETS = {
@@ -20,4 +21,6 @@ __all__ = [
     "GENERATION_PROMPTS",
     "get_eval_ids",
     "get_lambada_examples",
+    "TASKS",
+    "get_generation_task",
 ]

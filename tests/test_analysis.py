@@ -160,3 +160,21 @@ def test_shortlist_is_pareto_plus_within_limit_minus_baseline(costed_grid):
     assert all(r.get("quantize", True) for r in picked)  # the baseline is the reference, not a candidate
     assert any(r["name"] == "int8-int8-bf16-bf16" for r in picked)  # within limit
     assert len(picked) < len(costed_grid)
+
+
+def test_task_accuracy_is_preferred_over_agreement_for_the_generation_cost(costed_grid):
+    base, worse = costed_grid[0], costed_grid[1]
+    # agreement says "output changed"; the task says "and it got worse"
+    base.update(task_acc=0.70, generation_agreement=1.0)
+    worse.update(task_acc=0.60, generation_agreement=0.99)
+
+    weights = SelectionConfig(
+        accuracy_weight=0.0, bpv_weight=0.0, decode_speed_weight=0.0, generation_weight=1.0
+    )
+    score_rows(costed_grid, weights)
+    # 10 accuracy points lost, not the 1% of tokens that differ
+    assert worse["score"] == pytest.approx(-10.0)
+
+    worse.pop("task_acc")
+    score_rows(costed_grid, weights)
+    assert worse["score"] == pytest.approx(-1.0)

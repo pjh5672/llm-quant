@@ -159,3 +159,25 @@ def test_generation_options_default_and_override(tmp_path):
         root_dir=tmp_path,
     )
     assert c.generation is False and c.lambada_limit == 50
+
+
+def test_generation_task_defaults_and_can_be_disabled(tmp_path):
+    c = build_config(["--cfg", write(tmp_path, BASE)], root_dir=tmp_path)
+    assert c.generation_task == "arc_easy" and c.generation_task_limit is None
+
+    cfg = {**BASE, "evaluation": {**BASE["evaluation"], "generation_task": None}}
+    assert build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path).generation_task is None
+
+
+def test_unknown_generation_task_is_rejected(tmp_path):
+    cfg = {**BASE, "evaluation": {**BASE["evaluation"], "generation_task": "hellaswag"}}
+    with pytest.raises(ValueError, match="unknown generation_task"):
+        build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
+
+
+def test_generation_task_can_be_overridden_from_the_cli(tmp_path):
+    c = build_config(
+        ["--cfg", write(tmp_path, BASE), "--generation-task", "gsm8k", "--generation-task-limit", "20"],
+        root_dir=tmp_path,
+    )
+    assert c.generation_task == "gsm8k" and c.generation_task_limit == 20

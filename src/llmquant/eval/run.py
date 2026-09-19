@@ -77,8 +77,9 @@ def run_generation(config, reference=None):
     Returns (metrics, continuations). The continuations of the bf16 run become the reference
     every other run is compared against.
     """
-    from llmquant.core.datasets import GENERATION_PROMPTS
+    from llmquant.core.datasets import GENERATION_PROMPTS, get_generation_task
     from llmquant.eval.evaluate import (
+        evaluate_generation_task,
         evaluate_lambada,
         generation_agreement,
         greedy_continuations,
@@ -93,6 +94,12 @@ def run_generation(config, reference=None):
     metrics = {
         "lambada_acc": evaluate_lambada(model, tokenizer, list(lambada_examples(config.lambada_limit)))
     }
+    if config.generation_task:
+        examples, spec = get_generation_task(config.generation_task, config.generation_task_limit)
+        metrics["task"] = config.generation_task
+        metrics["task_acc"] = evaluate_generation_task(
+            model, tokenizer, examples, spec["score"], spec["max_new_tokens"]
+        )
     continuations = greedy_continuations(
         model, tokenizer, GENERATION_PROMPTS, config.max_new_tokens
     )
