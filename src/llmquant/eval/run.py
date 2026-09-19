@@ -90,11 +90,15 @@ def run_one(config) -> dict:
         "activation": normalize_dtype(quant.activation),
         "kv_cache": normalize_dtype(quant.kv_cache),
         "group_size": quant.group_size,
-        "kv_gb_per_1k_context": cost["kv_bytes_per_token"] * 1024 / GB,
-        "size_gb": cost["deployed_bytes"] / GB,
-        "decode_gb_per_token": cost["decode_bytes_per_token"] / GB,
-        "bits_per_element": cost["bits_per_element"],
     }
+    # a model loaded from a packed file has no bf16 original to cost against
+    if cost is not None:
+        row.update(
+            kv_gb_per_1k_context=cost["kv_bytes_per_token"] * 1024 / GB,
+            size_gb=cost["deployed_bytes"] / GB,
+            decode_gb_per_token=cost["decode_bytes_per_token"] / GB,
+            bits_per_element=cost["bits_per_element"],
+        )
 
     accuracies = {}
     for name in config.tasks:

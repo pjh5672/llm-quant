@@ -53,8 +53,6 @@ def test_unknown_section_and_key_are_rejected(tmp_path):
     "section,key,value,match",
     [
         ("quantization", "quant_method", "gptq", "only calibration-free"),
-        ("defaults", "pack", True, "pack is not implemented"),
-        ("defaults", "load_packed", "x.bin", "load_packed is not implemented"),
     ],
 )
 def test_unimplemented_slots_raise_instead_of_no_op(tmp_path, section, key, value, match):
@@ -68,6 +66,22 @@ def test_unimplemented_slots_raise_instead_of_no_op(tmp_path, section, key, valu
 def test_every_implemented_mode_is_accepted(tmp_path, mode):
     cfg = {"defaults": {"project": "p"}, "quantization": {"mode": mode}}
     assert build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path).mode == mode
+
+
+def test_packing_requires_the_kernel_mode(tmp_path):
+    """The packed layout is the one the kernel reads, so packing a fake-quant model would
+    write a file nothing can consume."""
+    cfg = {"defaults": {"project": "p", "pack": True}, "quantization": {"mode": "fake"}}
+    with pytest.raises(ValueError, match="pack needs mode='kernel'"):
+        build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path)
+
+    cfg["quantization"]["mode"] = "kernel"
+    assert build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path).pack is True
+
+
+def test_load_packed_is_accepted(tmp_path):
+    cfg = {"defaults": {"project": "p", "load_packed": "model.bin"}}
+    assert build_config(["--cfg", write(tmp_path, cfg)], root_dir=tmp_path).load_packed == "model.bin"
 
 
 def test_an_unknown_mode_is_rejected(tmp_path):

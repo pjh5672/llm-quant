@@ -61,9 +61,11 @@ class RunConfig:
             raise ValueError(
                 f"unknown mode {self.mode!r}, expected fake | real | kernel"
             )
-        for flag, phase in (("pack", "Phase 3"), ("load_packed", "Phase 4")):
-            if getattr(self, flag):
-                raise NotImplementedError(f"{flag} is not implemented yet ({phase}).")
+        if self.pack and self.mode != "kernel":
+            raise ValueError(
+                f"pack needs mode='kernel' (the packed layout is the one the kernel reads), "
+                f"got mode={self.mode!r}"
+            )
         object.__setattr__(self, "tasks", tuple(self.tasks or ()))
         unknown = [t for t in self.tasks if t not in TASKS]
         if unknown:

@@ -14,7 +14,7 @@
 - **GEMM 속도 측정 완료** — "속도 측정" 절. A8 전제가 흔들림.
 - **생성 태스크 추가 완료** — ARC-Easy(기본) / GSM8K. "생성 평가" 절 참고.
 - **정확도 기준을 생성 태스크로 교체, TTFT/TPS 실측 추가.** "선택 기준"·"지연 측정" 절 참고.
-- 테스트 **227개** 통과. 커밋 4개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
+- 테스트 **243개** 통과. 커밋 4개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
 
 ### 바로 다음에 할 일
 1. **전체 sweep을 새 기준으로 재실행** (~25분). 기존 `sweep.json`은 BPV·decode·생성 지표가
@@ -122,7 +122,7 @@ cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
 | 1 | **fake quant**(bf16 dequant) 조합 비교 → bf16 대비 성능 저하 → 최적 조합 선택 | ✅ 완료 (9조합 + attn/mlp 16조합) |
 
 | 2 | **real quant** reference: packing 안 한 int weight + group별 정수 누적 | ✅ **통과** — fake 13.2019 vs real 13.2027 (차이 0.006%) |
-| 3 | **packing → bin 파일 저장 → Python 로드** | 로드한 정수와 scale이 Phase 2와 bit-exact |
+| 3 | **packing → bin 파일 저장 → Python 로드** | ✅ **통과** — 정수·scale 113/113 bit-exact, 로드 모델 로짓 완전 동일 |
 | 4 | **custom CUDA 커널**이 int weight를 직접 읽어서 연산 | ✅ weight-only 완료 — M≤4에서 Phase 2와 `torch.equal`. decode 1.11x, VRAM −34% |
 | 5 | 채팅 | 정상 대화 |
 
@@ -337,14 +337,14 @@ llm-quant/
 │   ├── phase1_analyze.py                   # 저장된 sweep.json 재분석 (GPU 불필요)
 │   ├── phase1_generation.py                # 끝난 sweep에 stage 2(생성 평가)만 얹기
 │   └── phase4_bench_gemm.py                # GEMM 속도 측정
-├── tests/                                  # 227개
+├── tests/                                  # 243개
 │   ├── test_quantization.py  11            ├── test_cuda_kernel.py  41 (bit-exact)
 │   ├── test_config.py        21            ├── test_parser.py       27
 │   ├── test_analysis.py      15            ├── test_metrics.py       8 (디스크 vs decode 충돌)
 │   ├── test_tasks.py         24 (채점 파싱) ├── test_report.py        8
 │   ├── test_grouping.py      13 (패딩/head) ├── test_kv_cache.py      8
 │   ├── test_real_quant.py    16 (Phase 2)   ├── test_kernel_linear.py 18 (Phase 4)
-│   └── test_benchmark.py      4
+│   ├── test_packing.py       16 (Phase 3)   └── test_benchmark.py      4
 ├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 잔재 (지워도 됨)
 ├── results/                                # git 제외 (구 결과 보관)
 └── experiments/<project>/                  # git 제외, config 복사 + result.json / sweep.json
@@ -806,6 +806,58 @@ weight를 절반으로 줄여도 **상한이 1.23배**이고 실측 1.11배는 �
 - 첫 시도 기록: M 루프를 weight 로드 바깥에 두어 weight를 M번 다시 읽었고 M=64에서 0.01배였다.
   group마다 블록 전체 리덕션을 돈 것도 병목이었다. warp당 group 1개 + int32로 4개씩 읽기 +
   마지막에 리덕션 1회로 바꿔 0.052 → 0.013ms가 됐다.
+
+## Phase 3 packing (2026-09-19 완료) — `stages/s3_pack/`
+
+### 통과 조건 ✅
+| | 결과 |
+|---|---|
+| qweight bit-exact | **113/113** |
+| wscale bit-exact | **113/113** |
+| 로드한 모델의 로짓 | **원본과 완전히 동일** (max\|diff\| 0.00) |
+
+W4 전체 양자화 기준 파일 **1.1312 GB**, 저장 1.2초 / 로드 2.3초. 로드 시 **bf16 weight는
+한 번도 만들어지지 않는다** — 구조는 model_id의 config에서 오고, 양자화 레이어는 packed 정수에서
+바로 만들어지며, 양자화하지 않은 텐서만 bf16으로 읽는다.
+
+### canonical 레이아웃을 저장한다
+논리적 `[out, in]`이 아니라 **커널이 그대로 읽는 `[N, groups, 128]`** (패딩·head 분할 완료)을
+저장한다. 논리 모양을 저장하고 로드 때 reshape하면 패딩과 head 경계에 합의해야 하는 곳이
+**두 군데**가 되고, 언젠가 어긋나면 증상이 에러가 아니라 **틀린 숫자**다.
+
+### 디버깅에서 나온 함정 3개
+전부 "weight는 bit-exact인데 로짓이 다르다"로 나타났다. packing 자체는 처음부터 맞았다.
+
+1. **non-persistent 버퍼.** RoPE의 `inv_freq`는 `state_dict()`에 없는데, 로더는 meta에서
+   모델을 만들고 `to_empty()`를 부른다 — 그러면 그 버퍼가 **초기화되지 않은 메모리**를 가리킨다.
+   빼먹으면 position encoding이 쓰레기를 읽는다 (max|diff| 14.4).
+   → 저장하되 **원래 dtype으로**. `inv_freq`를 bf16으로 저장하면 위치를 표현할 정밀도가 안 된다.
+2. **파생 버퍼.** 양자화 레이어는 scale에서 파생된 버퍼(`_broadcast_scale`)도 들고 있는데,
+   이걸 일반 루프에서 bf16으로 저장하니 **생성자가 정확히 계산해둔 값을 로더가 덮어썼다**
+   (max|diff| 0.81). → 양자화 레이어 소유 텐서는 **prefix로 통째 제외**. 나중에 파생 버퍼를
+   하나 더 추가해도 같은 버그가 재발하지 않는다.
+3. `state_dict()`를 쓰면 1번이 자동으로 빠지는데, 그게 오히려 함정이었다.
+
+### 형식
+```
+[magic "LLMQUANT"][header 길이 8byte][JSON header][64byte 정렬된 raw tensor bytes]
+```
+- **nibble packing**: int4 두 개를 1byte. `+8`로 0~15 편향 후 짝수 index는 하위 4bit.
+  `-3, 5` → `5, 13` → `0xD5` (노트 예시와 일치, 테스트로 고정). int8은 그대로.
+  `+8` 편향은 **부호 확장 처리를 양쪽이 합의할 필요를 없앤다** — 몇 달 뒤 이 파일을 보고
+  커널을 짜는 사람이 값 범위를 반으로 날려먹기 딱 좋은 지점이다.
+- **64byte 정렬**: memory-map해서 정렬 복사 없이 GPU로 넘기기 위함.
+- JSON header: tensor별 dtype·shape·offset·크기, 레이어별 양자화 args(head_dim·out_group 포함),
+  non-persistent 버퍼 목록, 원본 model_id.
+
+### config 연결
+```yaml
+defaults:
+  pack: true              # mode=kernel 필요 — packed 레이아웃은 커널이 읽는 그 형태다
+  load_packed: model.bin  # 있으면 양자화를 건너뛰고 로드
+```
+`pack: true`는 `experiments/<project>/model.bin`에 저장한다.
+`pack`에 `mode != kernel`을 주면 **아무것도 못 읽는 파일이 나오므로 config 단계에서 거부**한다.
 
 ## packing 저장 형식 (확정)
 
