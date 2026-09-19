@@ -3,51 +3,58 @@
 ## ▶ 이어서 하기 (마지막 업데이트: 2026-09-18)
 
 ### 현재 위치
-- **Phase 0 완료. Phase 1 완료** (g128 재측정 끝, 아래 "Phase 1 결과"). **Phase 2는 아직 시작 전.**
+- **Phase 0·1 완료.** **Phase 2는 아직 시작 전.**
 - **granularity = group_size 128** (weight, activation 둘 다). "group 128 설계" 참고.
 - **CUDA quant-dequant 커널 완성.** PyTorch 레퍼런스와 bit-exact. "bit-exact 규칙" 참고.
-- **config 레이어 완성** (gaia-compressor 매핑). `configs/*.yaml` → `auto_llm.py` / `scheme_sweep.py`.
-  sweep과 단일 실행이 `entrypoints/run.py::run_one` 같은 경로를 탐. 재현 확인 완료
-  (W8A16 단일 실행 PPL이 sweep 값과 **완전히 동일**: 13.178328514099121).
-- 테스트 **102개** 통과. `git init`만 하고 커밋은 아직 없음.
+- **config 파이프라인 완성** (gaia-compressor 매핑). `configs/*.yaml` → `auto_llm.py` / `scheme_sweep.py`.
+  sweep과 단일 실행이 `entrypoints/run.py` 같은 경로를 탐 (W8A16 단일 실행 PPL이 sweep 값과
+  **완전히 동일**: 13.178328514099121).
+- **선택 기준 개정 완료** — BPV·decode 트래픽 가중 점수. "선택 기준" 절 참고.
+- **생성 평가 추가 완료** — LAMBADA + bf16 대비 생성 일치도, 2단계 sweep. "생성 평가" 절 참고.
+- **GEMM 속도 측정 완료** — "속도 측정" 절. A8 전제가 흔들림.
+- 테스트 **119개** 통과. **첫 커밋 완료** (`5b2eda0`, master, 52 files).
 
 ### 바로 다음에 할 일
-Phase 1은 **다 끝났다**(9조합 + attn/mlp 16조합 + GEMM 속도 측정).
-아래 "결정할 것" 2번만 정하면 Phase 2 진입. **A8/A16 선택이 Phase 2~3 작업을 거의 바꾸지 않으므로,
-결정을 Phase 4로 미루고 먼저 진행해도 된다.**
+1. **전체 sweep을 새 기준으로 재실행** (~25분). 기존 `sweep.json`은 BPV·decode·생성 지표가
+   없어서 리포트에 `-`로 나온다.
+   ```powershell
+   .\.venv\Scripts\python.exe examples\scheme_sweep.py --cfg configs\sweep-phase1.yaml
+   ```
+2. 그 결과로 아래 "결정할 것"을 확정하고 Phase 2(real quant reference) 진입.
 
-### 결정할 것 (Phase 2 시작 전)
+### 결정할 것
 1. **W4를 어떻게 할지.** ✅ **측정으로 결론남: 보완책 없이는 int4를 어디에도 못 쓴다.**
-   - 전부 int4: +29.31% / mlp만 int4: +18.52% / attn만 int4: +5.95%. **전부 5% 기준 밖.**
-   - 가장 아까운 건 attn만 int4(+5.95%, 1.346GB)지만 크기 이득이 5.5%뿐이라 교환이 나쁨.
-   - 남은 선택지:
-     - (a) **W8로 확정** → Phase 2 바로 진행 (권장, 가장 빠름)
-     - (b) W4 **보완책** 구현 후 재측정: 채널별 clipping ratio 탐색(MSE 최소화) 또는 Hadamard rotation.
-       **보완책은 MLP를 겨냥해야 한다** — 손실의 대부분이 MLP에서 나온다.
-2. **W8A8과 W8A16 중 무엇으로 갈지.** ⬅ **지금 막혀 있는 유일한 결정**
-   - A8 비용: PPL **+0.10%p**, 크기 이득 **0** (activation scale은 저장하지 않음).
-   - A8 이득: int8 GEMM 속도뿐인데, 측정해보니 **prefill 1.03~1.04x, decode 0**
-     (위 "속도 측정" 절). 기대했던 2x가 아니다.
-   - **→ 현재 증거로는 W8A16이 낫다.** A8을 고르려면 Phase 4 커널이 `torch._int_mm`보다
-     확실히 빠르다는 걸 보여야 한다. 입증 책임이 A8 쪽에 있다.
-   - 선택지: (a) **W8A16으로 확정**하고 Phase 2 진행 (권장),
-     (b) Phase 4에서 커널 속도를 본 뒤 되돌아와 결정 (A8 가능성을 열어둠).
-     어느 쪽이든 Phase 2~3 작업 내용은 **거의 같다** — real quant와 packing은 weight 기준이고,
-     activation은 저장할 scale이 없어서 config 한 줄 차이다.
+   전부 int4 +29.31% / mlp만 int4 +18.52% / attn만 int4 +5.95%. 전부 5% 기준 밖.
+   - (a) **W8로 확정** → Phase 2 바로 진행 (권장)
+   - (b) W4 **보완책** 구현 후 재측정: 채널별 clipping ratio 탐색(MSE 최소화) 또는 Hadamard rotation.
+     **보완책은 MLP를 겨냥해야 한다** — 손실의 대부분이 MLP에서 나온다.
+2. **W8A8과 W8A16 중 무엇으로 갈지.**
+   - A8 비용: PPL +0.10%p, 크기 이득 0.
+   - A8 이득: 측정 결과 **prefill 1.03~1.04x, decode 0** ("속도 측정" 절). 기대했던 2x가 아니다.
+   - **→ 현재 증거로는 W8A16.** A8을 고르려면 Phase 4 커널이 `torch._int_mm`보다 확실히 빠르다는
+     걸 보여야 한다. **입증 책임이 A8 쪽에 있다.**
+   - **A8/A16은 Phase 2~3 작업을 거의 바꾸지 않으므로 결정을 Phase 4로 미루고 진행해도 된다.**
+     단 Phase 2의 **연산 경로는 다르다**(A16은 dequant→bf16 matmul, A8은 group별 int32 누적).
+     Phase 3 packing만 동일하다.
 3. scale dtype fp32 유지 여부. g128이라 scale이 약 1.5MB → 약 30MB로 늘었음. 지금은 fp32 유지.
-4. head_weight는 **bf16으로 확정해도 됨.** 3번의 독립 측정에서 일관되게 크기(-252MB)도 PPL도 더 나음.
+4. **head_weight — 확정하면 안 된다. 기준끼리 충돌한다.**
+   - 디스크: bf16이 유리 (int8로 하면 tie가 끊겨 **+252MB**)
+   - decode 속도: int8이 유리 (lm_head를 토큰마다 통째로 읽음, 1.62x → **1.94x**)
+   - 크기 기준은 bf16을, 속도 기준은 int8을 고른다. Phase 4에서 실측 후 결정. 기본값은 bf16.
 
 ### 끝까지 확인하지 못한 것
 - 없음. 이전의 "csrc가 컴파일된 적 없음"은 해결됨 ("Windows 빌드 환경" 참고).
 - `csrc/w4a8_rtn_naive.cu`, `build_and_run.bat`은 초기 group-wise 설계의 잔재. 현재 커널
-  (`src/llmquant/kernels/`)과 무관하므로 지워도 됨.
+  (`src/llmquant/kernels/`)과 무관하므로 지워도 됨. 커밋에는 그대로 포함돼 있음.
 
 ### 다시 시작하는 방법
 ```powershell
 cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
-.\.venv\Scripts\python.exe -m pytest tests -q                                      # 84개
-.\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\llama3.2-1b-w8a16.yaml   # 단일 실행 ~1분
-.\.venv\Scripts\python.exe examples\scheme_sweep.py --cfg configs\sweep-phase1.yaml    # 16런 ~18분
+.\.venv\Scripts\python.exe -m pytest tests -q                                       # 119개
+.\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\llama3.2-1b-w8a16.yaml   # 단일 ~1분
+.\.venv\Scripts\python.exe examples\scheme_sweep.py --cfg configs\sweep-phase1.yaml    # 전체 ~25분
+.\.venv\Scripts\python.exe examples\bench_gemm.py                                      # GEMM 속도
+.\.venv\Scripts\python.exe examples\analyze_sweep.py experiments\phase1-sweep\sweep.json --bpv-weight 5
 ```
 - 패키지 재설치: `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"` (ninja 포함)
 - PowerShell에서 `$env:PYTHONIOENCODING="utf-8"` 권장.
@@ -256,17 +263,20 @@ llm-quant/
 │   ├── args/__init__.py                 # ModelArgs, DatasetArgs
 │   ├── args/quant_config.py             # QuantConfig(attn/mlp/head/activation/kv_cache/group_size)
 │   ├── args/parser.py                   # RunConfig, build_config(YAML+CLI), expand_sweep
+│   ├── args/selection.py                # SelectionConfig (PPL 제약 + 가중치)
 │   ├── datasets/wikitext.py             # get_eval_ids("wikitext2", tokenizer)
+│   ├── datasets/lambada.py              # get_lambada_examples(limit)
+│   ├── datasets/prompts.py              # GENERATION_PROMPTS (생성 비교용 고정 16개)
 │   ├── entrypoints/oneshot.py           # oneshot(model, recipe)
 │   ├── entrypoints/evaluate.py          # evaluate_ppl, generate, CLI(bf16 기준)
-│   ├── entrypoints/run.py               # run_one(config) — 단일 실행과 sweep의 공통 경로
+│   ├── entrypoints/run.py               # run_one(config), run_generation(config) — 공통 경로
 │   ├── analysis.py                      # sweep 결과 분석 (순수 함수, GPU/모델 불필요)
 │   ├── benchmark.py                     # GEMM 연산 벤치 (bf16 vs int8 vs int8 g128)
 │   ├── modifiers/quantization/scheme.py # QuantizationArgs, QuantizationScheme, PRESET_SCHEMES
 │   ├── modifiers/quantization/modifier.py # QuantizationModifier(scheme, attn_scheme, mlp_scheme, lm_head_scheme, mode)
 │   ├── observers/minmax.py              # compute_scale: channel(weight) / token(activation), fp32
 │   ├── modules/fake_quant_linear.py     # FakeQuantLinear
-│   └── utils/quant_ops.py, model.py, size.py
+│   └── utils/quant_ops.py, model.py, size.py(model_metrics: 디스크·decode·BPV)
 ├── src/llmquant/kernels/                # CUDA 커널 (JIT 빌드)
 │   ├── build.py                         # MSVC env + TMP/8.3 + ninja 설정, load_extension()
 │   ├── ops.py                           # fake_quantize_cuda(x, args, return_scale=False)
@@ -278,9 +288,10 @@ llm-quant/
 ├── tests/test_quantization.py           # 11개
 ├── tests/test_cuda_kernel.py            # 41개 (bit-exact 검증)
 ├── tests/test_config.py                 # 21개 (타깃 라우팅, bf16 규칙, activation 제한, kv_cache 슬롯)
-├── tests/test_parser.py                 # 16개 (YAML/CLI 우선순위, sweep 확장)
-├── tests/test_analysis.py               # 9개 (손으로 계산한 값과 대조)
+├── tests/test_parser.py                 # 21개 (YAML/CLI 우선순위, sweep 확장, selection)
+├── tests/test_analysis.py               # 13개 (손으로 계산한 값과 대조)
 ├── tests/test_benchmark.py              # 4개
+├── tests/test_metrics.py                # 8개 (BPV, 디스크 vs decode 충돌)
 ├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 초안 (컴파일 안 됨)
 ├── results/                             # git 제외 (구 결과 보관)
 └── experiments/<project>/               # git 제외, config 복사 + result.json / sweep.json
@@ -456,6 +467,91 @@ W8A8을 선택할 근거는 **오직 int8 GEMM 속도**였는데, **이 GPU에�
 torch의 int8 경로가 텐서코어를 제대로 못 쓰고 있을 가능성이 있고, CUTLASS/Marlin 계열
 커널이라면 달라질 수 있다. 그걸 확인하는 게 Phase 4다.
 **다만 입증 책임이 A8 쪽으로 넘어갔다.** 기본값은 W8A16으로 두는 편이 안전하다.
+
+## 선택 기준 (2026-09-18 개정)
+
+이전 기준은 "PPL 5% 이내 중 **가장 작은 모델**"이었다. 두 가지 문제가 있었다.
+1. **속도를 전혀 못 본다.** A8과 A16은 크기가 같아서 기준상 A8이 영원히 선택될 수 없다.
+2. **디스크 크기는 속도의 프록시로 틀리다.** lm_head에서 둘이 정면으로 어긋난다 (아래).
+
+### 세 가지 비용 지표 (`llmquant/utils/size.py::model_metrics`)
+
+| 지표 | 뜻 |
+|---|---|
+| `deployed_bytes` | 디스크 크기 |
+| `decode_bytes_per_token` | **토큰마다 읽는 바이트.** decode가 메모리 바운드라 이게 decode 속도를 결정한다 |
+| `bits_per_element` | gaia의 BPV. `num_bits + scale_bits/group_size`, 파라미터 수로 가중평균 |
+
+BPV 예: int4 g128 = **4.25**, int8 g128 = **8.25**, bf16 = **16**.
+
+**lm_head에서 두 기준이 충돌한다** (실측):
+
+| 조합 | 디스크 | decode GB/token | decode 배속 | BPV |
+|---|---|---|---|---|
+| bf16 | 2.3019 | 2.3019 | 1.00x | 16.00 |
+| attn·mlp int8, head **bf16** | **1.4240** | 1.4240 | 1.62x | 9.90 |
+| attn·mlp int8, head **int8** | 1.6762 | **1.1870** | **1.94x** | 8.25 |
+| attn·mlp int4, head bf16 | 0.9708 | 0.9708 | 2.37x | 6.75 |
+| attn·mlp int4, head int8 | 1.2231 | 0.7338 | 3.14x | 5.10 |
+
+`tie_word_embeddings=true`라 lm_head를 양자화하면 tie가 끊겨 **디스크는 +252MB 늘지만**,
+decode는 lm_head를 토큰마다 통째로 읽고 embedding은 행 조회뿐이라 **트래픽은 줄어든다.**
+→ 크기 기준은 head bf16을, 속도 기준은 head int8을 고른다. **head_weight를 크기만 보고
+확정하면 안 된다.**
+
+### 가중 점수
+
+```yaml
+selection:
+  ppl_limit_ratio: 1.05      # 하드 제약 (null이면 해제)
+  accuracy_weight: 1.0
+  bpv_weight: 2.0
+  decode_speed_weight: 2.0
+  generation_weight: 1.0
+```
+
+점수 = `w_bpv·BPV이득% + w_speed·decode이득% − w_acc·PPL비용% − w_gen·생성불일치%`
+(전부 bf16 대비 %로 정규화해서 가중치를 비교 가능하게 만든 것).
+
+- 하드 제약을 통과한 것 중 점수 최대를 고른다. `selection`을 안 주면 **옛 규칙**(최소 크기)으로
+  떨어져서 과거 sweep이 같은 답을 재현한다.
+- 가중치를 바꿔가며 재분석 가능: `analyze_sweep.py --bpv-weight 5 --speed-weight 3`
+- ⚠️ **정확도 지표가 없으면 0으로 치지 않는다.** baseline에서 직접 유도하고, 그것도 안 되면
+  `score_missing`에 기록한다. (구현 중 테스트가 잡은 버그 — 0으로 치면 가장 공격적인 조합이
+  항상 이긴다.)
+
+## 생성 평가 (2026-09-18)
+
+PPL은 teacher-forced라 **생성 경로를 한 번도 안 건드린다.** 디코드 루프와 KV 캐시를 쓰는
+지표가 따로 필요하다.
+
+### 두 지표
+- **LAMBADA 마지막단어 정확도** — 로컬 캐시(`EleutherAI/lambada_openai`, 5153개).
+  절대 수치. teacher-forced지만 **토큰 하나만 틀려도 예제 전체가 오답**이라 PPL보다 민감하다.
+- **bf16 대비 생성 일치도** — 고정 프롬프트 16개를 greedy 생성해서 bf16 출력과 비교.
+  `generation_agreement`(토큰 일치율), `generation_exact_match`, `generation_first_divergence`.
+  라벨이 필요 없고, **디코드+KV캐시 경로를 전부 쓰는 유일한 평가**다.
+  greedy는 결정적이라 어긋남은 전부 양자화 오차다.
+
+### 2단계 sweep
+전체 그리드는 PPL(런당 ~1분)로 거르고, **Pareto front + 기준 통과 조합에만** 생성 평가를
+돌린다(런당 ~15초, LAMBADA 100/32토큰 기준). 17조합 전부에 돌리면 1시간을 넘긴다.
+
+### 스모크 결과 — ⚠️ PPL이 손상을 과소평가한다
+(LAMBADA 100개, 32토큰 — 본 실행보다 작은 설정. n=100은 노이즈 ±5%p)
+
+| 조합 | PPL | LAMBADA | bf16 일치율 | 완전 일치 |
+|---|---|---|---|---|
+| bf16 | 13.1642 | 0.530 | - | - |
+| int8/int8 | +0.11% | 0.510 | **0.925** | **0.875** |
+| int4/int8 | +5.95% | 0.480 | 0.508 | 0.250 |
+| int4/int4 | +29.31% | 0.390 | 0.257 | 0.063 |
+
+- `int8/int8`은 PPL +0.11%로 "사실상 무손실"로 보이지만 **프롬프트의 12.5%에서 bf16과 다른
+  텍스트를 생성**하고, LAMBADA는 **−2.0%p(상대 −3.8%)** 떨어진다. PPL 증가폭의 30배가 넘는다.
+- **해석 주의**: 일치율은 "나빠졌다"가 아니라 "달라졌다"를 잰다. greedy라 토큰 하나가 틀어지면
+  이후가 전부 어긋나 민감하다. **절대 품질은 LAMBADA를 봐야 한다.**
+- 본 실행에서는 `lambada_limit: 500`으로 돌릴 것.
 
 ## packing 저장 형식 (확정)
 
