@@ -1,67 +1,79 @@
 # W4A8 Symmetric RTN Quantization — 작업 정리
 
-## ▶ 이어서 하기 (마지막 업데이트: 2026-09-18)
+## ▶ 이어서 하기 (마지막 업데이트: 2026-09-19)
 
 ### 현재 위치
-- **Phase 0·1 완료.** **Phase 2는 아직 시작 전.**
-- **granularity = group_size 128** (weight, activation 둘 다). "group 128 설계" 참고.
-- **CUDA quant-dequant 커널 완성.** PyTorch 레퍼런스와 bit-exact. "bit-exact 규칙" 참고.
-- **config 파이프라인 완성** (gaia-compressor 매핑). `configs/*.yaml` → `auto_llm.py` / `phase1_sweep.py`.
-  sweep과 단일 실행이 `entrypoints/run.py` 같은 경로를 탐 (W8A16 단일 실행 PPL이 sweep 값과
-  **완전히 동일**: 13.178328514099121).
-- **선택 기준 개정 완료** — BPV·decode 트래픽 가중 점수. "선택 기준" 절 참고.
-- **생성 평가 추가 완료** — LAMBADA + bf16 대비 생성 일치도, 2단계 sweep. "생성 평가" 절 참고.
-- **GEMM 속도 측정 완료** — "속도 측정" 절. A8 전제가 흔들림.
-- **생성 태스크 추가 완료** — ARC-Easy(기본) / GSM8K. "생성 평가" 절 참고.
-- **정확도 기준을 생성 태스크로 교체, TTFT/TPS 실측 추가.** "선택 기준"·"지연 측정" 절 참고.
-- 테스트 **243개** 통과. 커밋 4개 (`5b2eda0` 초기, `be63ec9` 문서, `380138e` core/stages/eval 개편).
+**Phase 0~4가 전부 통과했다. 남은 건 Phase 5(채팅)와 중단된 sweep 재개.**
+
+| Phase | 상태 | 통과 근거 |
+|---|---|---|
+| 0 환경·baseline | ✅ | bf16 PPL 13.1642 |
+| 1 fake quant | ⚠️ 조합 비교는 했으나 **마지막 sweep이 7/25에서 중단됨** | 아래 "바로 다음" 1번 |
+| 2 real quant | ✅ | fake 13.2019 vs real 13.2027 (0.006%) |
+| 3 packing | ✅ | 정수·scale 113/113 bit-exact, 로드 모델 로짓 완전 동일 |
+| 4 커널 (weight-only) | ✅ | M≤4에서 Phase 2와 `torch.equal`, decode 1.11x, VRAM −34% |
+| 5 채팅 | 미착수 | |
+
+- **레이아웃이 단일 정의로 고정됐다** (`core/layout.py`). fake/real/pack/커널이 전부 여기서 읽는다.
+  q/k/v는 out축 head별, o_proj는 in축 head별, 나머지는 끝 패딩. "레이아웃 명세" 절 참고.
+- **정확도 기준은 생성 태스크**(ARC-Easy/Challenge/OpenBookQA), PPL은 보조. "선택 기준" 절.
+- **가중치 우선순위: decode 4.0 > prefill 2.0 > accuracy 1.0**, BPV 0.5.
+- 테스트 **243개** 통과. 커밋 6개, `origin/master`에 푸시 완료
+  (https://github.com/pjh5672/llm-quant).
 
 ### 바로 다음에 할 일
-1. **전체 sweep을 새 기준으로 재실행** (~25분). 기존 `sweep.json`은 BPV·decode·생성 지표가
-   없어서 리포트에 `-`로 나온다.
+1. **sweep 재실행** (25런, 약 1.5시간). 마지막 실행이 7/25에서 중단됐고, 그 뒤로 레이아웃과
+   가중치가 바뀌어서 기존 결과는 무효다.
    ```powershell
    .\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml
    ```
-2. 그 결과로 아래 "결정할 것"을 확정하고 Phase 2(real quant reference) 진입.
+   중단분에서 본 것: **kv_cache int4가 정확도를 0.31 → 0.088로 무너뜨린다**(랜덤 추측보다 낮음).
+   int4 weight와 겹치며 증폭된 것으로 보이고, 상호작용 분석이 정량화해줄 것이다.
+2. Phase 5 채팅 (`stages/s5_chat/`) — packed 모델을 로드해서 대화. 로드 경로는 이미 동작한다.
 
 ### 결정할 것
-1. **W4를 어떻게 할지.** ✅ **측정으로 결론남: 보완책 없이는 int4를 어디에도 못 쓴다.**
-   전부 int4 +29.31% / mlp만 int4 +18.52% / attn만 int4 +5.95%. 전부 5% 기준 밖.
-   - (a) **W8로 확정** → Phase 2 바로 진행 (권장)
-   - (b) W4 **보완책** 구현 후 재측정: 채널별 clipping ratio 탐색(MSE 최소화) 또는 Hadamard rotation.
-     **보완책은 MLP를 겨냥해야 한다** — 손실의 대부분이 MLP에서 나온다.
-2. **W8A8과 W8A16 중 무엇으로 갈지.**
-   - A8 비용: PPL +0.10%p, 크기 이득 0.
-   - A8 이득: 측정 결과 **prefill 1.03~1.04x, decode 0** ("속도 측정" 절). 기대했던 2x가 아니다.
-   - **→ 현재 증거로는 W8A16.** A8을 고르려면 Phase 4 커널이 `torch._int_mm`보다 확실히 빠르다는
-     걸 보여야 한다. **입증 책임이 A8 쪽에 있다.**
-   - **A8/A16은 Phase 2~3 작업을 거의 바꾸지 않으므로 결정을 Phase 4로 미루고 진행해도 된다.**
-     단 Phase 2의 **연산 경로는 다르다**(A16은 dequant→bf16 matmul, A8은 group별 int32 누적).
-     Phase 3 packing만 동일하다.
-3. scale dtype fp32 유지 여부. g128이라 scale이 약 1.5MB → 약 30MB로 늘었음. 지금은 fp32 유지.
-4. **head_weight — 확정하면 안 된다. 기준끼리 충돌한다.**
-   - 디스크: bf16이 유리 (int8로 하면 tie가 끊겨 **+252MB**)
-   - decode 속도: int8이 유리 (lm_head를 토큰마다 통째로 읽음, 1.62x → **1.94x**)
-   - 크기 기준은 bf16을, 속도 기준은 int8을 고른다. Phase 4에서 실측 후 결정. 기본값은 bf16.
+1. **W4를 어떻게 할지.** ✅ 측정으로 결론: **보완책 없이는 int4를 어디에도 못 쓴다.**
+   전부 int4 +29.31% / mlp만 +18.52% / attn만 +5.95%, 전부 5% 기준 밖.
+   보완책을 만든다면 **MLP를 겨냥해야 한다** (손실의 대부분이 거기서 나온다).
+2. **W8A8 vs W8A16.** ✅ **사실상 A16으로 결론.** Phase 4에서 **weight-only 커널만 만들었고**
+   int-int(A8) 커널은 없다. 근거: `torch._int_mm`이 bf16 대비 1.03~1.04x뿐이고 decode는
+   `M>16`을 요구해 아예 못 쓴다. **이득은 int 연산이 아니라 int weight를 직접 읽는 대역폭**이다.
+   A8을 되살리려면 int-int 커널을 만들어야 하는데, 그 경우 **정수 합은 순서 무관이라
+   레퍼런스와 bit-exact 검증이 가능하다**는 장점은 있다.
+3. scale dtype fp32 유지 여부. g128이라 scale이 약 1.5MB → 약 30MB. 지금은 fp32 유지.
+4. **head_weight.** 기준끼리 충돌한다 — 디스크는 bf16(int8이면 tie가 끊겨 +252MB),
+   decode 속도는 int8(토큰마다 lm_head를 통째로 읽음, 1.62x → 1.94x). 실측 커널이 생겼으니
+   이제 재볼 수 있다. 기본값은 bf16.
+
+### 알아둘 것 (반복해서 부딪힌 것들)
+- **1B 모델의 decode는 weight 대역폭 바운드가 아니다.** 토큰 시간의 45%만 weight 읽기라
+  커널의 op 단위 2.37배가 전체에서는 1.11배가 된다. **모델이 클수록 이득이 커진다.**
+- **`mode=fake`의 TTFT/TPS는 배포 수치가 아니다.** 모든 조합이 bf16 weight를 들고 있어
+  구분이 안 된다. 판단은 `decode_gb_at_context`(해석적)로 한다.
+- **PPL은 손상을 과소평가한다.** +0.11%로 보이는 조합이 생성의 31%를 바꾼다.
+- **패딩은 수치적으로 공짜지만 용량은 아니다.** head_dim 64를 128 타일에 넣으면 attention
+  4개 projection이 전부 2배가 되어 **int8 attention이 bf16과 같은 바이트**가 된다.
 
 ### 끝까지 확인하지 못한 것
-- 없음. 이전의 "csrc가 컴파일된 적 없음"은 해결됨 ("Windows 빌드 환경" 참고).
-- `csrc/w4a8_rtn_naive.cu`, `build_and_run.bat`은 초기 group-wise 설계의 잔재. 현재 커널
-  (`src/llmquant/kernels/`)과 무관하므로 지워도 됨. 커밋에는 그대로 포함돼 있음.
+- **TTFT가 fake 48ms → kernel 79ms로 나빠진다.** prefill마다 weight를 dequant하는 비용.
+  없애려면 텐서코어 mainloop에 dequant를 fuse해야 한다(AWQ/Marlin 방식, 훨씬 큰 작업).
+- `csrc/w4a8_rtn_naive.cu`, `build_and_run.bat`은 초기 group-wise 설계의 잔재. 현재
+  `src/llmquant/stages/s4_kernel/`과 무관하므로 지워도 된다.
 
 ### 다시 시작하는 방법
 ```powershell
 cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
-.\.venv\Scripts\python.exe -m pytest tests -q                                       # 156개
-.\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\phase1\w8a16.yaml   # 단일 ~1분
-.\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml    # 전체 ~25분
-.\.venv\Scripts\python.exe examples\phase4_bench_gemm.py                                      # GEMM 속도
+.\.venv\Scripts\python.exe -m pytest tests -q                                       # 243개
+.\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\phase1\w8a16.yaml     # 단일 실행
+.\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml # 전체 ~1.5시간
+.\.venv\Scripts\python.exe examples\phase4_bench_gemm.py                            # GEMM 속도
 .\.venv\Scripts\python.exe examples\phase1_analyze.py experiments\phase1-sweep\sweep.json --bpv-weight 5
 ```
+- `mode`: `fake`(정확도 측정) | `real`(오라클) | `kernel`(배포). `pack: true`는 `mode=kernel` 필요.
 - 패키지 재설치: `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"` (ninja 포함)
 - PowerShell에서 `$env:PYTHONIOENCODING="utf-8"` 권장.
 - CUDA 커널은 첫 호출 때 자동 JIT 빌드(1~2분), 이후 캐시.
-- 결과는 `experiments/<project>/`에 저장됨 (config 복사 + `result.json` / `sweep.json`).
+- 결과는 `experiments/<project>/`에 저장됨 (config 복사 + `result.json` / `sweep.json` / `model.bin`).
 
 ---
 
