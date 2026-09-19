@@ -36,7 +36,13 @@ def _args_from_dict(payload):
     return None if payload is None else QuantizationArgs(**payload)
 
 
-def save_packed_model(model: nn.Module, path, model_id: str, extra: dict | None = None):
+def save_packed_model(
+    model: nn.Module,
+    path,
+    model_id: str,
+    kv_cache_bits: int | None = None,
+    extra: dict | None = None,
+):
     """Write every weight of a kernel-mode model into one file."""
     tensors, layers = {}, {}
 
@@ -85,6 +91,9 @@ def save_packed_model(model: nn.Module, path, model_id: str, extra: dict | None 
         "model_id": model_id,
         "layers": layers,
         "non_persistent_buffers": non_persistent,
+        # the KV cache is quantized at generate time rather than stored, so nothing in the
+        # weights records it; without this a packed file would silently chat in bf16 cache
+        "kv_cache_bits": kv_cache_bits,
         **(extra or {}),
     }
     return write_packed(path, tensors, meta)

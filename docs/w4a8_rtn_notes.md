@@ -3,7 +3,7 @@
 ## ▶ 이어서 하기 (마지막 업데이트: 2026-09-19)
 
 ### 현재 위치
-**Phase 0~4가 전부 통과했다. 남은 건 Phase 5(채팅)와 중단된 sweep 재개.**
+**Phase 0~5가 전부 통과했다. 남은 건 중단된 sweep 재개뿐이다.**
 
 | Phase | 상태 | 통과 근거 |
 |---|---|---|
@@ -12,13 +12,13 @@
 | 2 real quant | ✅ | fake 13.2019 vs real 13.2027 (0.006%) |
 | 3 packing | ✅ | 정수·scale 113/113 bit-exact, 로드 모델 로짓 완전 동일 |
 | 4 커널 (weight-only) | ✅ | M≤4에서 Phase 2와 `torch.equal`, decode 1.11x, VRAM −34% |
-| 5 채팅 | 미착수 | |
+| 5 채팅 | ✅ | packed W4 로드 후 정상 대화, 캐시 턴 간 유지 |
 
 - **레이아웃이 단일 정의로 고정됐다** (`core/layout.py`). fake/real/pack/커널이 전부 여기서 읽는다.
   q/k/v는 out축 head별, o_proj는 in축 head별, 나머지는 끝 패딩. "레이아웃 명세" 절 참고.
 - **정확도 기준은 생성 태스크**(ARC-Easy/Challenge/OpenBookQA), PPL은 보조. "선택 기준" 절.
 - **가중치 우선순위: decode 4.0 > prefill 2.0 > accuracy 1.0**, BPV 0.5.
-- 테스트 **243개** 통과. 커밋 6개, `origin/master`에 푸시 완료
+- 테스트 **251개** 통과. 커밋 6개, `origin/master`에 푸시 완료
   (https://github.com/pjh5672/llm-quant).
 
 ### 바로 다음에 할 일
@@ -29,7 +29,7 @@
    ```
    중단분에서 본 것: **kv_cache int4가 정확도를 0.31 → 0.088로 무너뜨린다**(랜덤 추측보다 낮음).
    int4 weight와 겹치며 증폭된 것으로 보이고, 상호작용 분석이 정량화해줄 것이다.
-2. Phase 5 채팅 (`stages/s5_chat/`) — packed 모델을 로드해서 대화. 로드 경로는 이미 동작한다.
+2. sweep 결과로 "결정할 것"을 확정하면 프로젝트의 원래 목표는 달성된다.
 
 ### 결정할 것
 1. **W4를 어떻게 할지.** ✅ 측정으로 결론: **보완책 없이는 int4를 어디에도 못 쓴다.**
@@ -63,7 +63,7 @@
 ### 다시 시작하는 방법
 ```powershell
 cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
-.\.venv\Scripts\python.exe -m pytest tests -q                                       # 243개
+.\.venv\Scripts\python.exe -m pytest tests -q                                       # 251개
 .\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\phase1\w8a16.yaml     # 단일 실행
 .\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml # 전체 ~1.5시간
 .\.venv\Scripts\python.exe examples\phase4_bench_gemm.py                            # GEMM 속도
@@ -136,7 +136,7 @@ cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
 | 2 | **real quant** reference: packing 안 한 int weight + group별 정수 누적 | ✅ **통과** — fake 13.2019 vs real 13.2027 (차이 0.006%) |
 | 3 | **packing → bin 파일 저장 → Python 로드** | ✅ **통과** — 정수·scale 113/113 bit-exact, 로드 모델 로짓 완전 동일 |
 | 4 | **custom CUDA 커널**이 int weight를 직접 읽어서 연산 | ✅ weight-only 완료 — M≤4에서 Phase 2와 `torch.equal`. decode 1.11x, VRAM −34% |
-| 5 | 채팅 | 정상 대화 |
+| 5 | 채팅 | ✅ **통과** — packed W4 모델 로드 후 정상 대화, 캐시 턴 간 유지 |
 
 - **최적 조합 선택 기준**: bf16 대비 PPL 증가 5% 이내(≈13.82 이하) 조합 중 모델 크기가 가장 작은 것. (A8/A16 구분이 안 되는 문제 있음 → 위 "결정할 것" 2번)
 - **Phase 2 대상**: 선택한 조합 + PPL 차이가 1% 이내인 차순위 조합.
@@ -348,15 +348,17 @@ llm-quant/
 │   ├── phase1_sweep.py                     # 그리드 확장 + 2단계 평가 + 분석 리포트
 │   ├── phase1_analyze.py                   # 저장된 sweep.json 재분석 (GPU 불필요)
 │   ├── phase1_generation.py                # 끝난 sweep에 stage 2(생성 평가)만 얹기
+│   ├── phase5_chat.py                      # packed 모델로 대화
 │   └── phase4_bench_gemm.py                # GEMM 속도 측정
-├── tests/                                  # 243개
+├── tests/                                  # 251개
 │   ├── test_quantization.py  11            ├── test_cuda_kernel.py  41 (bit-exact)
 │   ├── test_config.py        21            ├── test_parser.py       27
 │   ├── test_analysis.py      15            ├── test_metrics.py       8 (디스크 vs decode 충돌)
 │   ├── test_tasks.py         24 (채점 파싱) ├── test_report.py        8
 │   ├── test_grouping.py      13 (패딩/head) ├── test_kv_cache.py      8
 │   ├── test_real_quant.py    16 (Phase 2)   ├── test_kernel_linear.py 18 (Phase 4)
-│   ├── test_packing.py       16 (Phase 3)   └── test_benchmark.py      4
+│   ├── test_packing.py       16 (Phase 3)   ├── test_chat.py           8 (Phase 5)
+│   └── test_benchmark.py      4
 ├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 잔재 (지워도 됨)
 ├── results/                                # git 제외 (구 결과 보관)
 └── experiments/<project>/                  # git 제외, config 복사 + result.json / sweep.json
@@ -870,6 +872,36 @@ defaults:
 ```
 `pack: true`는 `experiments/<project>/model.bin`에 저장한다.
 `pack`에 `mode != kernel`을 주면 **아무것도 못 읽는 파일이 나오므로 config 단계에서 거부**한다.
+
+## Phase 5 채팅 (2026-09-20 완료) — `stages/s5_chat/`
+
+**전체 스택이 배포 형태로 도는 유일한 지점이다.** packed 파일을 넣으면 대화가 나오고,
+bf16 모델은 한 번도 만들어지지 않는다. weight는 커널이 정수로 읽고, config가 지시하면 KV 캐시도
+양자화되며, 캐시는 턴 사이에 유지된다.
+
+```bash
+python examples/phase5_chat.py --load-packed experiments/w4/model.bin
+python examples/phase5_chat.py --cfg configs/phase1/w8a16.yaml --mode kernel
+python examples/phase5_chat.py --load-packed model.bin --ask "질문 하나만"
+```
+대화 중 `/reset`으로 초기화, `/exit`로 종료.
+
+### 캐시를 턴 사이에 유지한다
+매 턴 히스토리를 다시 인코딩하는 게 더 간단하지만, **양자화된 캐시에서는 조용히 다른 동작**이다.
+한 번 양자화되어 남아 있는 엔트리는 오차가 더 쌓이지 않는데, 재인코딩하면 매 턴 전체를
+다시 양자화한다. 캐시를 들고 가는 쪽이 더 빠르면서 배포 동작과도 일치한다.
+
+### packed 파일이 kv_cache 비트폭을 들고 다닌다
+KV 캐시는 generate 시점에 양자화되므로 **weight에는 아무 기록이 남지 않는다.**
+헤더에 `kv_cache_bits`를 넣지 않으면 packed W4 모델이 **조용히 bf16 캐시로 대화하게 된다.**
+
+### 실측
+packed W4 모델(1.1312 GB) 로드 후:
+```
+you>  What is the capital of France? Answer in one sentence.
+model> The capital of France is Paris, which is also the largest city in the country
+       and the seat of the French government.
+```
 
 ## packing 저장 형식 (확정)
 

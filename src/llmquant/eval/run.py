@@ -69,11 +69,29 @@ def _applied(config):
 
 def run_one(config) -> dict:
     """Load, quantize, measure. The model is rebuilt per call because fake quant is in place."""
-    model, tokenizer = load_pretrained(ModelArgs(model_id=config.model, device=config.device))
-    recipe = config.to_modifier()
-    cost = model_metrics(model, recipe)
-    if recipe is not None:
-        oneshot(model, recipe)
+    if config.load_packed:
+        # the whole point of a packed file: the bf16 model is never built, so there is also
+        # nothing to cost the quantized one against
+        from llmquant.stages.s3_pack import load_packed_model
+
+        model = load_packed_model(config.load_packed, device=config.device)
+        tokenizer = AutoTokenizer.from_pretrained(config.model)
+        cost = None
+    else:
+        model, tokenizer = load_pretrained(ModelArgs(model_id=config.model, device=config.device))
+        recipe = config.to_modifier()
+        cost = model_metrics(model, recipe)
+        if recipe is not None:
+            oneshot(model, recipe)
+        if config.pack:
+            from llmquant.stages.s3_pack import save_packed_model
+
+            save_packed_model(
+                model,
+                config.project_dir / "model.bin",
+                config.model,
+                kv_cache_bits=config.quant.kv_cache_bits if config.quantize else None,
+            )
 
     quant = _applied(config)
     # the KV cache is quantized at generation time, not by rewiring the model, so it only
