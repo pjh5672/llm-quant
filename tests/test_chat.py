@@ -135,3 +135,74 @@ def test_a_packed_model_holds_a_two_turn_conversation(tmp_path):
     assert "paris" in first.lower()
     chat.ask("And of Japan?")
     assert len(chat.history) == 4
+
+
+class CountingTokenizer(StubTokenizer):
+    """Encodes one token per message, so a context limit can be reached in a few turns."""
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.seen.append([dict(m) for m in messages])
+        return Encoding(input_ids=torch.zeros(1, len(messages), dtype=torch.long))
+
+
+class RecordingModel(StubModel):
+    """Records the prompt length each turn actually generated from.
+
+    `tokenizer.seen` cannot answer that: trimming re-encodes, so it also holds the
+    over-limit attempts that were rejected on the way down.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.prompt_lengths = []
+
+    def generate(self, input_ids=None, **kwargs):
+        self.prompt_lengths.append(input_ids.shape[1])
+        return super().generate(input_ids=input_ids, **kwargs)
+
+
+def test_old_turns_are_dropped_to_stay_inside_the_context():
+    """Nothing else bounds a carried conversation: the cache grows one entry per token
+    until the model's position limit or an out-of-memory, neither of them legible."""
+    session = ChatSession(model=RecordingModel(), tokenizer=CountingTokenizer(),
+                          max_new_tokens=1, max_context_tokens=4, system_prompt=None)
+    for i in range(6):
+        session.ask(f"turn {i}")
+    # every turn generated from a prompt that left room for the generation
+    assert all(n + 1 <= 4 for n in session.model.prompt_lengths), session.model.prompt_lengths
+    assert session.history[-2]["content"] == "turn 5"   # the newest turn is never dropped
+    assert all(m["content"] != "turn 0" for m in session.history)  # the oldest is gone
+
+
+def test_trimming_drops_the_cache_because_its_entries_are_positional():
+    built = []
+
+    def factory():
+        cache = object()
+        built.append(cache)
+        return cache
+
+    session = ChatSession(model=StubModel(), tokenizer=CountingTokenizer(),
+                          max_new_tokens=1, max_context_tokens=4, system_prompt=None,
+                          cache_factory=factory)
+    for i in range(6):
+        session.ask(f"turn {i}")
+    assert len(built) > 1, "a trim must invalidate the cache it no longer describes"
+
+
+def test_a_single_turn_that_cannot_fit_says_so():
+    session = ChatSession(model=StubModel(), tokenizer=CountingTokenizer(),
+                          max_new_tokens=99, max_context_tokens=2, system_prompt=None)
+    with pytest.raises(ValueError, match="tokens of context and the limit is 2"):
+        session.ask("hello")
+
+
+def test_without_a_limit_nothing_is_dropped():
+    class NoLimitModel(StubModel):
+        config = None
+
+    session = ChatSession(model=NoLimitModel(), tokenizer=CountingTokenizer(),
+                          max_new_tokens=1, system_prompt=None)
+    for i in range(6):
+        session.ask(f"turn {i}")
+    assert len(session.history) == 12

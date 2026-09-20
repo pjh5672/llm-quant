@@ -72,11 +72,13 @@ def run_one(config) -> dict:
     if config.load_packed:
         # the whole point of a packed file: the bf16 model is never built, so there is also
         # nothing to cost the quantized one against
-        from llmquant.s3_pack import load_packed_model
+        from llmquant.s3_pack import load_packed_model, packed_dtypes
 
         model = load_packed_model(config.load_packed, device=config.device)
         tokenizer = AutoTokenizer.from_pretrained(config.model)
         cost = None
+        # the file records what it holds; the config that started this run may say nothing
+        from_file = packed_dtypes(config.load_packed)
     else:
         model, tokenizer = load_pretrained(ModelArgs(model_id=config.model, device=config.device))
         recipe = config.to_modifier()
@@ -94,6 +96,10 @@ def run_one(config) -> dict:
             )
 
     quant = _applied(config)
+    if config.load_packed:
+        from dataclasses import replace as _replace
+
+        quant = _replace(quant, **from_file)
     # the KV cache is quantized at generation time, not by rewiring the model, so it only
     # shows up in the generation tasks -- which is exactly why accuracy moved off PPL,
     # since a PPL pass never reads the cache back

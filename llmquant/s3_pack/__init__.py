@@ -8,6 +8,7 @@ place that could disagree with core.layout about where a group begins.
 
 from llmquant.s3_pack.format import read_header, read_packed, write_packed
 from llmquant.s3_pack.model_io import (
+    packed_dtypes,
     describe_packed,
     load_packed_model,
     save_packed_model,
@@ -20,6 +21,7 @@ from llmquant.s3_pack.packing import (
 )
 
 __all__ = [
+    "packed_dtypes",
     "describe_packed",
     "load_packed_model",
     "pack_int4",

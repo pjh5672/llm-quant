@@ -153,6 +153,43 @@ def _replace(model: nn.Module, name: str, module: nn.Module):
     setattr(parent, child, module)
 
 
+def packed_dtypes(path) -> dict:
+    """The dtype each axis actually has in a packed file.
+
+    Without this a run started with --load-packed reports whatever the config happened to
+    say, which for a bare --load-packed is bf16 on every axis -- a quantized model
+    described as unquantized. The file knows; it records num_bits per layer.
+    """
+    meta = read_header(path)["meta"]
+    groups = {"attn_weight": set(), "mlp_weight": set(), "head_weight": set()}
+    for name, spec in (meta.get("layers") or {}).items():
+        if ".self_attn." in name:
+            key = "attn_weight"
+        elif ".mlp." in name:
+            key = "mlp_weight"
+        elif "lm_head" in name:
+            key = "head_weight"
+        else:
+            continue
+        bits = (spec.get("weights") or {}).get("num_bits")
+        if bits:
+            groups[key].add(bits)
+
+    def name_for(bits_set):
+        if not bits_set:
+            return "bf16"
+        if len(bits_set) > 1:
+            return "mixed"
+        return f"int{next(iter(bits_set))}"
+
+    kv_bits = meta.get("kv_cache_bits")
+    return {
+        **{k: name_for(v) for k, v in groups.items()},
+        "kv_cache": f"int{kv_bits}" if kv_bits else "bf16",
+        "activation": "bf16",  # the kernel path is weight-only; see s4_kernel
+    }
+
+
 def describe_packed(path) -> dict:
     """Header only: what is in the file, without paging in the weights."""
     header = read_header(path)

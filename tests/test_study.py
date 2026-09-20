@@ -211,3 +211,60 @@ def test_markdown_renders_the_verification_verdict(summary):
 
 def test_markdown_without_verification_omits_the_section(summary):
     assert "## Verification" not in format_markdown(summary)
+
+
+# ---------------------------------------------------------------- pattern coverage
+
+
+class GptStyle(nn.Module):
+    """Names that are NOT Llama's: the recipe should match none of them."""
+
+    def __init__(self):
+        super().__init__()
+        self.config = Config()
+        self.h = nn.ModuleList([nn.Module()])
+        self.h[0].attn = nn.Module()
+        self.h[0].attn.c_attn = nn.Linear(2048, 6144, bias=False)
+        self.h[0].attn.c_proj = nn.Linear(2048, 2048, bias=False)
+        self.h[0].mlp_block = nn.Module()
+        self.h[0].mlp_block.c_fc = nn.Linear(2048, 8192, bias=False)
+
+
+def test_a_llama_named_model_is_fully_covered():
+    from llmquant.eval.inspect import pattern_coverage
+
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="int8",
+                         head_weight="int8").to_modifier()
+    cov = pattern_coverage(TinyModel(), recipe)
+    assert cov["matched_fraction"] == 1.0
+    assert cov["unmatched_modules"] == []
+
+
+def test_a_differently_named_model_matches_nothing_and_says_so():
+    """The dangerous case: the run succeeds, reports int8, and quantized nothing."""
+    from llmquant.eval.inspect import pattern_coverage
+
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="int8").to_modifier()
+    cov = pattern_coverage(GptStyle(), recipe)
+    assert cov["matched_fraction"] == 0.0
+    assert cov["unmatched_modules"]
+
+    facts = model_facts(GptStyle(), recipe, group_size=128)
+    assert "NOTHING MATCHED" in " ".join(fact_warnings(facts))
+
+
+def test_partial_coverage_is_reported_with_the_missing_modules():
+    from llmquant.eval.inspect import pattern_coverage
+
+    class Mixed(TinyModel):
+        def __init__(self):
+            super().__init__()
+            self.model.layers[0].extra = nn.Module()
+            self.model.layers[0].extra.w = nn.Linear(2048, 8192, bias=False)
+
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="int8",
+                         head_weight="int8").to_modifier()
+    cov = pattern_coverage(Mixed(), recipe)
+    assert 0.0 < cov["matched_fraction"] < 1.0
+    note = " ".join(fact_warnings(model_facts(Mixed(), recipe, group_size=128)))
+    assert "stay bf16" in note

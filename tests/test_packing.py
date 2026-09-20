@@ -149,3 +149,39 @@ def test_describe_reads_only_the_header(tmp_path):
     assert summary["model_id"] == "test/model"
     assert summary["quantized_layers"] == 1
     assert summary["bytes"] > 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_a_packed_file_reports_the_dtypes_it_actually_holds(tmp_path):
+    """A run started with --load-packed has no config to describe itself with, so before
+    this it reported bf16 on every axis -- a quantized model described as unquantized."""
+    from llmquant.s3_pack import packed_dtypes
+
+    torch.manual_seed(0)
+    model = nn.Module()
+    linear = nn.Linear(GROUP_SIZE, GROUP_SIZE, bias=False).cuda().to(torch.bfloat16)
+    model.lm_head = KernelQuantLinear.from_linear(linear, preset_name_to_scheme("W8A16"))
+    path = save_packed_model(model, tmp_path / "m.bin", "test/model", kv_cache_bits=8)
+
+    dtypes = packed_dtypes(path)
+    assert dtypes["head_weight"] == "int8"
+    assert dtypes["kv_cache"] == "int8"
+    assert dtypes["attn_weight"] == "bf16"  # nothing matched that group
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_mixed_widths_in_one_group_are_reported_as_mixed(tmp_path):
+    from llmquant.s3_pack import packed_dtypes
+
+    torch.manual_seed(0)
+    model = nn.Module()
+    model.model = nn.Module()
+    model.model.layers = nn.ModuleList([nn.Module(), nn.Module()])
+    for i, name in enumerate(("W4A16", "W8A16")):
+        layer = model.model.layers[i]
+        layer.mlp = nn.Module()
+        lin = nn.Linear(GROUP_SIZE, GROUP_SIZE, bias=False).cuda().to(torch.bfloat16)
+        layer.mlp.gate_proj = KernelQuantLinear.from_linear(lin, preset_name_to_scheme(name))
+
+    path = save_packed_model(model, tmp_path / "mixed.bin", "test/model")
+    assert packed_dtypes(path)["mlp_weight"] == "mixed"

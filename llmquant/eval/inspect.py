@@ -80,6 +80,45 @@ def padding_overhead(model, recipe) -> dict:
     return totals
 
 
+def pattern_coverage(model, recipe) -> dict:
+    """Which Linears the recipe's patterns actually reach.
+
+    The patterns are Llama naming -- `self_attn.*_proj`, `mlp.*_proj`, `lm_head`. On a
+    model that names things differently the recipe matches nothing and every weight stays
+    bf16, which is safe and silent: the run finishes, reports a quantized config, and has
+    quantized nothing. This is what makes that visible.
+    """
+    import torch.nn as nn
+
+    recipe = recipe.resolve(model) if recipe is not None else None
+    matched = unmatched = 0
+    missed = []
+    fused_qkv = []
+    for name, module in model.named_modules():
+        if not isinstance(module, nn.Linear):
+            continue
+        params = module.weight.numel()
+        covered = recipe is not None and recipe.scheme_for(name) is not None
+        if covered:
+            matched += params
+            leaf = name.rsplit(".", 1)[-1]
+            # one Linear producing q, k and v at once: the per-head output grouping assumes
+            # a projection whose output axis is heads of ONE tensor, so it does not apply
+            if ".self_attn." in name and leaf not in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                fused_qkv.append(name)
+        else:
+            unmatched += params
+            missed.append(name)
+    total = matched + unmatched
+    return {
+        "matched_params": matched,
+        "unmatched_params": unmatched,
+        "matched_fraction": matched / total if total else 0.0,
+        "unmatched_modules": missed,
+        "unexpected_attn_modules": fused_qkv,
+    }
+
+
 def parameter_split(model) -> dict:
     """Where the parameters actually are, which is where quantizing them can pay."""
     split = {}
@@ -112,6 +151,7 @@ def model_facts(model, recipe=None, group_size=None) -> dict:
     }
     if recipe is not None:
         facts["padding"] = padding_overhead(model, recipe)
+        facts["coverage"] = pattern_coverage(model, recipe)
         if group_size is None:
             for target in ("attn_scheme", "mlp_scheme", "lm_head_scheme"):
                 scheme = getattr(recipe, target, None)
@@ -128,6 +168,31 @@ def model_facts(model, recipe=None, group_size=None) -> dict:
 def fact_warnings(facts: dict) -> list[str]:
     """The consequences that a results table will not show on its own."""
     notes = []
+    coverage = facts.get("coverage")
+    if coverage is not None:
+        fraction = coverage["matched_fraction"]
+        if fraction < 0.01:
+            notes.append(
+                "NOTHING MATCHED. The recipe's patterns are Llama naming "
+                "(self_attn.*_proj, mlp.*_proj, lm_head) and this model uses different "
+                "names, so every weight stays bf16 and the run will report a quantized "
+                "config having quantized nothing. Add patterns in core/modifier.py."
+            )
+        elif fraction < 0.95:
+            missed = coverage["unmatched_modules"]
+            shown = ", ".join(missed[:3]) + ("..." if len(missed) > 3 else "")
+            notes.append(
+                f"only {fraction:.0%} of Linear parameters match the recipe's patterns; "
+                f"{len(missed)} Linears stay bf16 ({shown}). Accuracy will look better "
+                "than the dtype suggests and the size saving will be smaller."
+            )
+        if coverage["unexpected_attn_modules"]:
+            names = ", ".join(coverage["unexpected_attn_modules"][:3])
+            notes.append(
+                f"attention Linears that are not q/k/v/o_proj: {names}. A fused qkv "
+                "projection is quantized, but the per-head output grouping assumes one "
+                "tensor per head axis, so its layout is not the one this project verified."
+            )
     if facts.get("tie_word_embeddings"):
         vocab, hidden = facts.get("vocab_size"), facts.get("hidden_size")
         extra = ""
