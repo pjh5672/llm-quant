@@ -1,9 +1,14 @@
 # The combination the 25-run phase 1 sweep selected (see docs, "Phase 1 최종 sweep").
 #
-#   accuracy  -2.28% on ARC-Easy / ARC-Challenge / OpenBookQA (the only other combinations
-#             inside the 5% limit were the same weights with a bf16 or int4 cache)
-#   decode    1.6125 GB/token at 2k context vs 2.3644 bf16 -> 1.47x projected
+#   accuracy  -2.97% on ARC-Easy / ARC-Challenge / OpenBookQA
+#   decode    74.3 tok/s measured on mode=kernel vs 77.3 bf16 (0.96x)
+#   VRAM      1.65 GB peak vs 2.42 bf16 (-32%)
 #   BPV       10.98
+#
+# The compression is real; the decode speedup is not, on a 1B model. Only ~45% of a decode
+# step is weight bandwidth here, so reading int8 weights instead of bf16 does not pay for
+# the dequant on the way in. It should pay off on a larger model, where weights dominate
+# the step. Measure before assuming: examples/auto_llm.py --mode kernel.
 #
 # Why these four axes are what they are:
 #   attn int8  int4 attention costs +30.08% accuracy and saves the least (dBPV -1.09).
@@ -12,9 +17,15 @@
 #              the 5% limit. Use configs/phase1/w8a4-mlp.yaml if -12.56% is acceptable.
 #   act  bf16  int8 activations cost accuracy (+0.97%) and buy exactly nothing: dBPV 0.00,
 #              no decode traffic saved. There is no int-int GEMM path for them to feed.
-#   kv   int8  nearly free (+1.28%) and halves cache traffic, which is what decides decode
-#              speed once context grows. int4 is banned: +23.23% alone, and it collapses
-#              below random guessing when combined with int4 MLP weights.
+#   kv   bf16 int8 looked nearly free on accuracy (+1.28%) and the analytic score liked it,
+#              but measuring it on mode=kernel settles it the other way: decode drops from
+#              74.3 to 50.3 tok/s, -32%. The cache is quantized in PyTorch on every decode
+#              step, while the traffic it saves is 1.8% of the step (weights are 1.58 GB
+#              against a 0.034 GB cache at 2k). Paying 32% of the time for 1.8% of the
+#              bytes is a bad trade at this model size. Revisit if the cache quant moves
+#              into the attention kernel, or at a context long enough for the cache to
+#              rival the weights. int4 is banned outright: +23.23% accuracy alone, and it
+#              collapses below random guessing when combined with int4 MLP weights.
 #
 # mode is fake so the numbers above are reproducible. Switch to kernel to deploy, which is
 # also what --pack requires and the only mode where the measured TTFT means anything.
@@ -36,7 +47,7 @@ quantization:
   mlp_weight: int8
   head_weight: bf16
   activation: bf16
-  kv_cache: int8
+  kv_cache: bf16
   group_size: 128
 
 evaluation:
