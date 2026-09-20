@@ -13,7 +13,7 @@ import time
 import torch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "src"))
-from llmquant.stages.s4_kernel.build import (  # noqa: E402
+from llmquant.s4_kernel.build import (  # noqa: E402
     CUDA_FLAGS,
     CXX_FLAGS,
     ensure_extensions_dir,

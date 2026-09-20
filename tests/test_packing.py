@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 from llmquant.core.scheme import GROUP_SIZE, preset_name_to_scheme
-from llmquant.stages.s3_pack import (
+from llmquant.s3_pack import (
     describe_packed,
     pack_int4,
     pack_weight,
@@ -23,9 +23,9 @@ from llmquant.stages.s3_pack import (
     unpack_weight,
     write_packed,
 )
-from llmquant.stages.s3_pack.format import ALIGNMENT, MAGIC
-from llmquant.stages.s3_pack.model_io import save_packed_model
-from llmquant.stages.s4_kernel import KernelQuantLinear
+from llmquant.s3_pack.format import ALIGNMENT, MAGIC
+from llmquant.s3_pack.model_io import save_packed_model
+from llmquant.s4_kernel import KernelQuantLinear
 
 
 def test_the_documented_nibble_example():

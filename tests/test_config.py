@@ -4,7 +4,7 @@ import torch.nn as nn
 from llmquant.core.config import QuantConfig
 from llmquant.core.config import BF16, dtype_to_args, normalize_dtype
 from llmquant.core.scheme import GROUP_SIZE
-from llmquant.stages.s1_fake import FakeQuantLinear
+from llmquant.s1_fake import FakeQuantLinear
 
 
 @pytest.mark.parametrize("value,expected", [(None, BF16), ("bf16", BF16), ("INT4", "int4"), (" int8 ", "int8")])

@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 
 from llmquant.core.scheme import GROUP_SIZE, QuantizationArgs, preset_name_to_scheme
-from llmquant.stages.s1_fake import FakeQuantLinear
-from llmquant.stages.s2_real import RealQuantLinear, exact_fp32_matmul, quantize_weight
+from llmquant.s1_fake import FakeQuantLinear
+from llmquant.s2_real import RealQuantLinear, exact_fp32_matmul, quantize_weight
 
 K, N, M = 4 * GROUP_SIZE, 256, 32
 SCHEMES = ["W8A16", "W8A8", "W4A16", "W4A8"]

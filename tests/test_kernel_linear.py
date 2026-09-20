@@ -14,7 +14,7 @@ from llmquant.core.scheme import (
     QuantizationScheme,
     preset_name_to_scheme,
 )
-from llmquant.stages.s2_real import RealQuantLinear
+from llmquant.s2_real import RealQuantLinear
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 
@@ -49,7 +49,7 @@ def linear():
 def test_the_kernel_path_is_exact_against_the_reference(name, M, linear):
     """Below the dispatch threshold the kernel does the same grouped integer arithmetic the
     reference does, so this is an equality rather than a tolerance."""
-    from llmquant.stages.s4_kernel import KernelQuantLinear
+    from llmquant.s4_kernel import KernelQuantLinear
 
     scheme = LAYOUTS[name]
     torch.manual_seed(0)
@@ -64,8 +64,8 @@ def test_the_cublas_path_lands_exactly_where_fake_quant_does(name, linear):
     """Above the threshold the weight is dequantized to the activation dtype and handed to
     cuBLAS -- the same computation fake quant performs, so the two agree exactly. It is
     therefore no less precise than the path it replaces, and no more."""
-    from llmquant.stages.s1_fake import FakeQuantLinear
-    from llmquant.stages.s4_kernel import KERNEL_MAX_ROWS, KernelQuantLinear
+    from llmquant.s1_fake import FakeQuantLinear
+    from llmquant.s4_kernel import KERNEL_MAX_ROWS, KernelQuantLinear
 
     scheme = LAYOUTS[name]
     torch.manual_seed(0)
@@ -82,7 +82,7 @@ def test_the_cublas_path_lands_exactly_where_fake_quant_does(name, linear):
 def test_real_width_is_kept_separate_from_the_padded_one(linear):
     """o_proj pads 32 heads of 64 into 32 groups of 128, so the stored tensor is twice as
     wide as the layer. Reporting the padded width broke the dequant path."""
-    from llmquant.stages.s4_kernel import KernelQuantLinear
+    from llmquant.s4_kernel import KernelQuantLinear
 
     module = KernelQuantLinear.from_linear(linear, LAYOUTS["o_proj (head on the reduction axis)"])
     assert module.in_features == K
@@ -90,7 +90,7 @@ def test_real_width_is_kept_separate_from_the_padded_one(linear):
 
 
 def test_both_dispatch_branches_are_exercised(linear):
-    from llmquant.stages.s4_kernel import KERNEL_MAX_ROWS, KernelQuantLinear
+    from llmquant.s4_kernel import KERNEL_MAX_ROWS, KernelQuantLinear
 
     module = KernelQuantLinear.from_linear(linear, LAYOUTS["plain"])
     small = torch.randn(KERNEL_MAX_ROWS, K, device="cuda", dtype=torch.bfloat16)
@@ -100,7 +100,7 @@ def test_both_dispatch_branches_are_exercised(linear):
 
 
 def test_weight_is_stored_as_int8(linear):
-    from llmquant.stages.s4_kernel import KernelQuantLinear
+    from llmquant.s4_kernel import KernelQuantLinear
 
     module = KernelQuantLinear.from_linear(linear, LAYOUTS["int4"])
     assert module.qweight.dtype == torch.int8
@@ -109,14 +109,14 @@ def test_weight_is_stored_as_int8(linear):
 
 
 def test_leading_dimensions_survive(linear):
-    from llmquant.stages.s4_kernel import KernelQuantLinear
+    from llmquant.s4_kernel import KernelQuantLinear
 
     module = KernelQuantLinear.from_linear(linear, LAYOUTS["plain"])
     assert module(torch.randn(2, 3, K, device="cuda", dtype=torch.bfloat16)).shape == (2, 3, N)
 
 
 def test_bias_is_applied():
-    from llmquant.stages.s4_kernel import KernelQuantLinear
+    from llmquant.s4_kernel import KernelQuantLinear
 
     biased = nn.Linear(K, N, bias=True).cuda().to(torch.bfloat16)
     torch.nn.init.constant_(biased.bias, 1.5)
@@ -126,7 +126,7 @@ def test_bias_is_applied():
 
 
 def test_bf16_weights_are_refused(linear):
-    from llmquant.stages.s4_kernel import KernelQuantLinear
+    from llmquant.s4_kernel import KernelQuantLinear
 
     scheme = QuantizationScheme(weights=None, input_activations=None)
     with pytest.raises(ValueError, match="needs a weight scheme"):

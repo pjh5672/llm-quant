@@ -18,23 +18,23 @@ python -m pip install -e ".[dev]"   # ninja is required: the CUDA kernels JIT-co
 
 Python ≥ 3.10, PyTorch with CUDA. The kernels compile on first use (1–2 minutes, then
 cached). Built and measured on an RTX 5060 Ti (sm_120) under Windows; see
-[docs/w4a8_rtn_notes.md](docs/w4a8_rtn_notes.md) for the MSVC/nvcc setup, including the
+[NOTES.md](NOTES.md) for the MSVC/nvcc setup, including the
 one where `nvcc` dies silently because `%TMP%` contains a space.
 
 ## Quick start
 
 ```bash
 # the whole study: structure check -> sweep -> selection -> real-path verification -> report
-python examples/study.py --cfg configs/phase1/sweep.yaml
+python examples/study.py --cfg configs/sweep.yaml
 
 # same, on a different model
-python examples/study.py --cfg configs/phase1/sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
+python examples/study.py --cfg configs/sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
 
 # two-minute plumbing check
-python examples/study.py --cfg configs/phase1/smoke.yaml
+python examples/study.py --cfg configs/smoke.yaml
 
 # one configuration, no sweep
-python examples/auto_llm.py --cfg configs/phase1/recommended.yaml
+python examples/auto_llm.py --cfg configs/recommended.yaml
 
 # chat with a packed model
 python examples/phase5_chat.py --load-packed experiments/<project>/model.bin
@@ -206,18 +206,24 @@ int8 products peaks at 2.06M, so it holds.
 ## Layout of the repo
 
 ```
-src/llmquant/
-  core/     config, schemes, scale computation, quant-dequant math, layout, cost metrics
-  stages/   s1_fake -> s2_real -> s3_pack -> s4_kernel -> s5_chat  (matches `mode`)
-  eval/     running, measuring, analysing, reporting
-examples/   study.py (full pipeline), auto_llm.py (one run), phase1_analyze.py, ...
-configs/    YAML; CLI flags override
-tests/      269 tests
-docs/       w4a8_rtn_notes.md -- the working notes, in Korean, far more detailed than this
+llmquant/
+  core/       config, schemes, scale computation, quant-dequant math, layout, cost metrics
+  eval/       running, measuring, analysing, reporting
+  modes.py    mode -> Linear class, the one place core reaches into a phase
+  s1_fake/    mode="fake"    bf16 dequant, for measuring the accuracy cost
+  s2_real/    mode="real"    int weights in exact fp32 math, the reference
+  s3_pack/                   packing, the .bin format, the loader
+  s4_kernel/  mode="kernel"  CUDA kernels, and the graphed decode loop
+  s5_chat/                   conversation on a packed model
+examples/     study.py (full pipeline), auto_llm.py (one run), phase1_analyze.py, ...
+configs/      recommended / sweep / smoke; CLI flags override
+prototypes/   tried and rejected, kept with its numbers
+tests/        283 tests
+NOTES.md      the working notes, in Korean, far more detailed than this
 ```
 
-`core` depends on `stages` in exactly one place: `modifier.apply()` asks
-`stages.quant_linear_for()` for the Linear class matching `mode`, via a deferred import so
+`core` reaches into a phase in exactly one place: `modifier.apply()` asks
+`modes.quant_linear_for()` for the Linear class matching `mode`, via a deferred import so
 the dependency does not become a module-level cycle.
 
 ## Tests

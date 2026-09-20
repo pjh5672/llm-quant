@@ -1,8 +1,8 @@
 """One command: point it at a model, get a finished quantization study.
 
-    python examples/study.py --cfg configs/phase1/sweep.yaml
-    python examples/study.py --cfg configs/phase1/sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
-    python examples/study.py --cfg configs/phase1/sweep.yaml --skip-verify   # sweep only
+    python examples/study.py --cfg configs/sweep.yaml
+    python examples/study.py --cfg configs/sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
+    python examples/study.py --cfg configs/sweep.yaml --skip-verify   # sweep only
 
 Six stages, in the order the conclusions actually depend on each other:
 

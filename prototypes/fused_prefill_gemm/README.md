@@ -4,7 +4,7 @@
 which is not enough to pay for what fusing saves. Kept because the finding is worth keeping
 and because picking the work back up should not start from nothing.
 
-Nothing in `src/llmquant/` imports this. It builds and runs on its own:
+Nothing in `llmquant/` imports this. It builds and runs on its own:
 
 ```bash
 python prototypes/fused_prefill_gemm/fused_bench.py

@@ -9,7 +9,7 @@ import torch
 
 from llmquant.core.quant_ops import fake_quantize
 from llmquant.core.scheme import QuantizationArgs
-from llmquant.stages.s1_fake import FakeQuantCache, make_cache_factory
+from llmquant.s1_fake import FakeQuantCache, make_cache_factory
 
 HEAD_DIM = 64
 SHAPE = (1, 2, 5, HEAD_DIM)  # batch, kv heads, seq, head_dim

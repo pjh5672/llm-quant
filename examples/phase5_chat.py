@@ -1,7 +1,7 @@
 """Chat with a quantized model.
 
     python examples/phase5_chat.py --load-packed experiments/w4/model.bin
-    python examples/phase5_chat.py --cfg configs/phase1/w8a16.yaml --mode kernel
+    python examples/phase5_chat.py --cfg configs/w8a16.yaml --mode kernel
     python examples/phase5_chat.py --load-packed model.bin --ask "What is a prime number?"
 
 With --load-packed the bf16 model is never built: the architecture comes from the model id
@@ -16,7 +16,7 @@ from pathlib import Path
 import torch
 
 from llmquant.core.parser import build_config
-from llmquant.stages.s5_chat import ChatSession, load_for_chat
+from llmquant.s5_chat import ChatSession, load_for_chat
 
 ROOT = Path(__file__).resolve().parents[1]
 

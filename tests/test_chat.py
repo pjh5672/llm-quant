@@ -8,7 +8,7 @@ file producing a coherent multi-turn exchange -- is a single marked test.
 import pytest
 import torch
 
-from llmquant.stages.s5_chat import SYSTEM_PROMPT, ChatSession
+from llmquant.s5_chat import SYSTEM_PROMPT, ChatSession
 
 
 class Encoding(dict):
@@ -117,8 +117,8 @@ def test_a_packed_model_holds_a_two_turn_conversation(tmp_path):
     from llmquant.core.config import ModelArgs, QuantConfig
     from llmquant.core.model import load_pretrained
     from llmquant.core.oneshot import oneshot
-    from llmquant.stages.s3_pack import save_packed_model
-    from llmquant.stages.s5_chat import load_for_chat
+    from llmquant.s3_pack import save_packed_model
+    from llmquant.s5_chat import load_for_chat
 
     model, _ = load_pretrained(ModelArgs())
     config = QuantConfig(attn_weight="int8", mlp_weight="int8")
