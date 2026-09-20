@@ -8,13 +8,17 @@ the decision needs all of them at once: a combination can be cheap in bits, neut
 decode traffic and still lose accuracy, and each of those lives in a different column.
 """
 
+from llmquant.eval.analysis import prefill_is_measurable
+
 DTYPE_AXES = ("attn_weight", "mlp_weight", "head_weight", "activation", "kv_cache")
 
 FAKE_MODE_WARNING = (
     "  note: TTFT/TPS come from the fake-quant path, where weights are stored dequantized in\n"
     "  bf16 -- every combination moves the same bytes, so measured decode speed barely moves\n"
     "  and A8 looks slower for its extra activation quant. `proj` is the analytic estimate\n"
-    "  from decode traffic and is the number to trust until a real stage exists."
+    "  from decode traffic and is the number to trust until a real stage exists.\n"
+    "  TTFT is shown but NOT scored here: on this path it ranks combinations by how much\n"
+    "  fake work they do, which was enough to put a strictly worse one first."
 )
 
 
@@ -80,7 +84,7 @@ def _headline(summary, out):
         f"{context} tokens of context;"
     )
     out.append("  proj  = the decode speedup that implies, since decode is memory bound")
-    if has_latency:
+    if has_latency and any(not prefill_is_measurable(r) for r in rows):
         out.append(FAKE_MODE_WARNING)
 
 
@@ -174,7 +178,8 @@ def _selection(summary, out):
                 f"{_fmt(r.get('decode_gb_at_context'), '9.4f')}  {r['name']}"
             )
         if any(r.get("score_missing") for r in sel["ranked"]):
-            out.append("  (rows missing a metric scored on what they had)")
+            dropped = sorted({m for r in sel["ranked"] for m in r.get("score_missing", [])})
+            out.append(f"  (scored on what was available; not counted: {', '.join(dropped)})")
 
 
 def _structure(summary, out):

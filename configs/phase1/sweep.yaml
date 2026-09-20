@@ -25,6 +25,10 @@ evaluation:
   # every one stores dequantized bf16 weights, so they move the same bytes and run the same
   # bf16 GEMM. Shown anyway -- a flat column is a result, not a gap. The score uses the
   # analytic decode traffic instead, which does separate them.
+  # TPS is flat as predicted. TTFT is NOT: it is flat across weight dtypes but moves with
+  # activation (~48 -> ~85ms) and KV cache (~48 -> ~59ms) quantization, because the fake
+  # path pays real wall time to simulate them. That is simulation overhead, not prefill,
+  # so the score drops it on this path -- see analysis.prefill_is_measurable.
   latency: true
   latency_prompt_tokens: 512
   latency_new_tokens: 64
@@ -39,7 +43,7 @@ selection:
   acc_drop_limit_pct: 5.0     # hard guard; the weights only rank what passes it
   # priority: decode throughput > prefill latency > accuracy
   decode_speed_weight: 4.0    # scores decode_gb_at_context, the throughput proxy
-  prefill_speed_weight: 2.0   # scores TTFT; flat until a real kernel exists
+  prefill_speed_weight: 2.0   # scores TTFT, but only on a real/kernel/packed run
   accuracy_weight: 1.0
   bpv_weight: 0.5             # near-collinear with decode traffic, kept as a tie-breaker
 

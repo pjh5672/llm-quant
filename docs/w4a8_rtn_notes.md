@@ -1,14 +1,14 @@
 # W4A8 Symmetric RTN Quantization — 작업 정리
 
-## ▶ 이어서 하기 (마지막 업데이트: 2026-09-19)
+## ▶ 이어서 하기 (마지막 업데이트: 2026-09-20)
 
 ### 현재 위치
-**Phase 0~5가 전부 통과했다. 남은 건 중단된 sweep 재개뿐이다.**
+**Phase 0~5가 전부 통과했고, 25런 sweep도 완주했다. 프로젝트의 원래 목표는 달성됐다.**
 
 | Phase | 상태 | 통과 근거 |
 |---|---|---|
 | 0 환경·baseline | ✅ | bf16 PPL 13.1642 |
-| 1 fake quant | ⚠️ 조합 비교는 했으나 **마지막 sweep이 7/25에서 중단됨** | 아래 "바로 다음" 1번 |
+| 1 fake quant | ✅ | 25/25 완주, "Phase 1 최종 sweep" 절 |
 | 2 real quant | ✅ | fake 13.2019 vs real 13.2027 (0.006%) |
 | 3 packing | ✅ | 정수·scale 113/113 bit-exact, 로드 모델 로짓 완전 동일 |
 | 4 커널 (weight-only) | ✅ | M≤4에서 Phase 2와 `torch.equal`, decode 1.11x, VRAM −34% |
@@ -18,28 +18,31 @@
   q/k/v는 out축 head별, o_proj는 in축 head별, 나머지는 끝 패딩. "레이아웃 명세" 절 참고.
 - **정확도 기준은 생성 태스크**(ARC-Easy/Challenge/OpenBookQA), PPL은 보조. "선택 기준" 절.
 - **가중치 우선순위: decode 4.0 > prefill 2.0 > accuracy 1.0**, BPV 0.5.
-- 테스트 **251개** 통과. 커밋 6개, `origin/master`에 푸시 완료
+- 테스트 **254개** 통과. `origin/master`에 푸시 완료
   (https://github.com/pjh5672/llm-quant).
 
 ### 바로 다음에 할 일
-1. **sweep 재실행** (25런, 약 1.5시간). 마지막 실행이 7/25에서 중단됐고, 그 뒤로 레이아웃과
-   가중치가 바뀌어서 기존 결과는 무효다.
-   ```powershell
-   .\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml
-   ```
-   중단분에서 본 것: **kv_cache int4가 정확도를 0.31 → 0.088로 무너뜨린다**(랜덤 추측보다 낮음).
-   int4 weight와 겹치며 증폭된 것으로 보이고, 상호작용 분석이 정량화해줄 것이다.
-2. sweep 결과로 "결정할 것"을 확정하면 프로젝트의 원래 목표는 달성된다.
+sweep이 끝났으므로 필수 작업은 없다. 남은 건 선택지다.
+1. **권장 설정을 config로 고정**: `attn=int8, mlp=int8, act=bf16, kv=int8` (−2.28%, 1.47x).
+2. **`mode=kernel`로 TTFT/TPS 재측정.** fake 경로의 지연 수치는 배포값이 아니라서
+   점수에서 빠진다(아래 "TTFT 점수 오염" 참고). 실측하려면 kernel 런이 필요하다.
+3. head_weight int8 재측정 — 실측 커널이 생겼으니 이제 디스크 vs decode 트레이드오프를
+   숫자로 끊을 수 있다.
 
 ### 결정할 것
-1. **W4를 어떻게 할지.** ✅ 측정으로 결론: **보완책 없이는 int4를 어디에도 못 쓴다.**
-   전부 int4 +29.31% / mlp만 +18.52% / attn만 +5.95%, 전부 5% 기준 밖.
-   보완책을 만든다면 **MLP를 겨냥해야 한다** (손실의 대부분이 거기서 나온다).
+1. **W4를 어떻게 할지.** ✅ 25런 sweep으로 확정: **보완책 없이는 int4를 어디에도 못 쓴다**
+   (최선이 `int8/int4` −11.64%, 5% 기준의 두 배 넘음). 단, **보완책의 대상이 바뀌었다** —
+   PPL 기준으로는 MLP가 문제로 보였지만 생성 정확도로는 **attention이 2.2배 더 민감하고**
+   (int4화 비용 +30.08% vs +13.38%) mlp int4가 용량은 2.4배 더 줄인다. 즉
+   **int4는 MLP에만 주고 attention은 int8로 두는 게 항상 낫다.** 보완책을 만든다면
+   attention int4를 살리는 쪽이어야 한다.
 2. **W8A8 vs W8A16.** ✅ **사실상 A16으로 결론.** Phase 4에서 **weight-only 커널만 만들었고**
    int-int(A8) 커널은 없다. 근거: `torch._int_mm`이 bf16 대비 1.03~1.04x뿐이고 decode는
    `M>16`을 요구해 아예 못 쓴다. **이득은 int 연산이 아니라 int weight를 직접 읽는 대역폭**이다.
    A8을 되살리려면 int-int 커널을 만들어야 하는데, 그 경우 **정수 합은 순서 무관이라
    레퍼런스와 bit-exact 검증이 가능하다**는 장점은 있다.
+2-b. **kv_cache.** ✅ 확정: **int8은 사실상 공짜**(+1.28%, kv 트래픽 절반)라 기본으로 켠다.
+   **int4는 금지** — 단독으로도 +23.23%고 mlp int4와 만나면 랜덤 추측 이하로 붕괴한다.
 3. scale dtype fp32 유지 여부. g128이라 scale이 약 1.5MB → 약 30MB. 지금은 fp32 유지.
 4. **head_weight.** 기준끼리 충돌한다 — 디스크는 bf16(int8이면 tie가 끊겨 +252MB),
    decode 속도는 int8(토큰마다 lm_head를 통째로 읽음, 1.62x → 1.94x). 실측 커널이 생겼으니
@@ -74,6 +77,99 @@ cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
 - PowerShell에서 `$env:PYTHONIOENCODING="utf-8"` 권장.
 - CUDA 커널은 첫 호출 때 자동 JIT 빌드(1~2분), 이후 캐시.
 - 결과는 `experiments/<project>/`에 저장됨 (config 복사 + `result.json` / `sweep.json` / `model.bin`).
+
+---
+
+## Phase 1 최종 sweep (25/25 완주, 2026-09-20)
+
+`configs/phase1/sweep.yaml`, task_limit 300, 결과 `experiments/phase1-sweep/sweep.json`.
+재분석은 GPU 없이: `python examples/phase1_analyze.py experiments/phase1-sweep/sweep.json`
+
+### 5% 한계선을 넘은 것은 25개 중 3개뿐이고 전부 int8/int8
+
+| attn | mlp | act | kv | acc | dacc% | PPL | BPV | kv KB/t | dec@2k |
+|---|---|---|---|---|---|---|---|---|---|
+| bf16 | bf16 | bf16 | bf16 | 0.4867 | +0.00 | 13.16 | 16.00 | 32.0 | 2.364 |
+| int8 | int8 | bf16 | int8 | 0.4756 | **+2.28** | 13.19 | 10.98 | 17.0 | 1.613 |
+| int8 | int8 | bf16 | bf16 | 0.4722 | +2.97 | 13.19 | 10.98 | 32.0 | 1.642 |
+| int8 | int4 | bf16 | bf16 | 0.4300 | +11.64 | 15.61 | 8.37 | 32.0 | 1.267 |
+| int8 | int4 | bf16 | int8 | 0.4256 | +12.56 | 15.61 | 8.37 | 17.0 | 1.238 |
+| int4 | int8 | bf16 | bf16 | 0.3156 | +35.16 | 16.54 | 9.89 | 32.0 | 1.486 |
+| int4 | int4 | bf16 | int4 | 0.1122 | +76.94 | 22.50 | 7.28 | 9.0 | 1.066 |
+
+**권장: `attn=int8, mlp=int8, act=bf16, kv=int8`** — 정확도 −2.28%, 1.47x, kv 트래픽 절반.
+공격적으로 가려면 `attn=int8, mlp=int4, kv=int8` (−12.56%, **1.91x**, BPV 8.37).
+
+### 축별 효과 (한 축만 바꾸고 나머지 고정)
+
+```
+attn_weight: int8 -> int4    +30.08%   [+23.52..+39.50]   dBPV -1.09
+kv_cache:    bf16 -> int4    +23.23%    [+6.39..+40.18]   dBPV  0.00
+mlp_weight:  int8 -> int4    +13.38%    [+0.68..+35.39]   dBPV -2.61
+kv_cache:    bf16 -> int8     +1.28%    [-0.68..+4.57]    dBPV  0.00
+activation:  bf16 -> int8     +0.97%    [-2.74..+4.79]    dBPV  0.00
+```
+
+**이전의 "MLP가 attention보다 int4에 민감하다"는 결론은 뒤집혔다.** 그건 PPL 기준이었고,
+생성 정확도 기준으로는 **attention이 2.2배 더 민감하다**. 게다가 mlp int4가 용량을 2.4배
+더 줄인다. 따라서 **int4 attention은 순수한 손해다** — `int8/int4`가 `int4/int8`를
+정확도(+11.64 vs +35.16)와 크기(8.37 vs 9.89) 양쪽에서 지배한다. int4 예산은 전부 MLP에.
+
+**activation int8은 아무것도 사주지 않는다.** 정확도는 공짜(+0.97%)인데 dBPV가 정확히
+0.00이고 decode 트래픽도 안 줄인다. int-int GEMM 경로가 없는 한 A8을 켤 이유가 없다.
+
+### 상호작용 — mlp int4 + kv int4만 초가산적으로 무너진다
+
+```
+attn+mlp+activation+kv    예측 55.48 -> 실제 76.71   잔차 +21.23
+attn+mlp+kv               예측 55.94 -> 실제 73.97   잔차 +18.04
+mlp+activation+kv         예측 23.29 -> 실제 39.27   잔차 +15.98
+attn+kv                   예측 47.26 -> 실제 38.58   잔차  -8.68
+attn+mlp                  예측 40.87 -> 실제 34.70   잔차  -6.16
+```
+
+중단분에서 봤던 "kv int4가 0.31 → 0.088로 붕괴"는 재현됐다(0.1122 / 0.0989, 랜덤 0.25 이하).
+**원인은 kv int4 단독이 아니라 mlp int4와의 상호작용이다**: mlp=int8이면 같은 kv int4가
+−10%밖에 안 든다. attn+mlp, attn+kv는 오히려 하위가산적이라 예상보다 덜 아프다.
+
+### PPL은 양방향으로 틀린다
+
+| 조합 | dPPL% | dacc% | 과소평가 |
+|---|---|---|---|
+| int8/int8 + kv int4 | **+0.18** | **+18.04** | +17.86 |
+| int8/int4 + kv int4 | +18.75 | +42.24 | +23.49 |
+| int4/int4 + kv bf16 | +70.91 | +37.67 | **−33.24** |
+
+PPL 패스는 KV 캐시를 되읽지 않으므로 kv int4의 피해를 **전혀 못 본다**(+0.18% vs 실제 −18%).
+반대로 int4/int4에서는 피해를 33포인트 과장한다. PPL 단독 판단은 이 설계에서 못 쓴다.
+
+### TTFT 점수 오염 (2026-09-20 수정) — `analysis.prefill_is_measurable`
+
+선정 로직이 처음에 `int8/int8 + kv bf16`을 골랐는데, `kv int8` 쪽이 **정확도와 decode
+트래픽 둘 다 더 좋았다.** 뒤집은 건 TTFT 10.3ms 차이(가중치 2.0)뿐이었다.
+
+sweep 데이터가 원인을 그대로 보여준다 — TTFT는 **weight dtype에 대해 완전히 평평하고**
+(int4든 int8이든 ~48ms), 오직 activation(~48 → ~85ms)과 kv_cache(~48 → ~59ms) 양자화에만
+반응한다. fake 경로가 그 둘을 **시뮬레이션하느라 실제 벽시계 시간을 쓰기 때문**이다.
+즉 그 TTFT는 prefill 성능이 아니라 **시뮬레이션 오버헤드**를 재고 있었다.
+
+수정: 행에 `latency_mode`를 기록하고, `mode=fake`인 행은 점수에서 `ttft_ms`를 뺀다
+(표에는 계속 보여주되 "NOT scored"라고 명시). 결과적으로 선정이
+`attn=int8, mlp=int8, act=bf16, kv=int8`로 바뀐다 — 두 지표 모두에서 이기는 행.
+`decode_gb_at_context`는 원래부터 해석적 값이라 영향 없다.
+실측 TTFT를 점수에 쓰려면 `mode=kernel`로 돌려야 한다.
+
+### stage 2 상대 생성 일치도
+
+| 조합 | LAMBADA | agree | exact |
+|---|---|---|---|
+| bf16 | 0.6140 | 1.0000 | 1.0000 |
+| int8/int8 + kv int8 | 0.6160 | 0.8567 | 0.5625 |
+| int8/int4 | 0.5780 | 0.2041 | 0.0625 |
+| int4/int4 | 0.4240 | 0.1104 | 0.0000 |
+
+정확도가 −2.28%인 권장 조합조차 **연속 생성의 44%가 bf16과 다르다.** 태스크 점수가
+비슷하다고 출력이 같은 게 아니다.
 
 ---
 

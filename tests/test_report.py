@@ -30,10 +30,10 @@ def row(attn, mlp, acc, **extra):
 def summary():
     rows = [
         row("bf16", "bf16", 0.60, bits_per_element=16.0, decode_gb_per_token=2.0,
-            ttft_ms=100.0, decode_tps=30.0, ppl=10.0,
+            ttft_ms=100.0, decode_tps=30.0, ppl=10.0, latency_mode="fake",
             task_acc={"arc_easy": 0.70, "openbookqa": 0.50}),
         row("int8", "int8", 0.58, ttft_ms=95.0, decode_tps=31.0, ppl=10.1,
-            task_acc={"arc_easy": 0.68, "openbookqa": 0.48}),
+            latency_mode="fake", task_acc={"arc_easy": 0.68, "openbookqa": 0.48}),
     ]
     return summarize(rows, SelectionConfig())
 
@@ -47,7 +47,18 @@ def test_headline_table_carries_every_decision_column(summary):
 
 
 def test_latency_rows_carry_the_fake_mode_warning(summary):
-    assert "fake-quant path" in format_report(summary)
+    text = format_report(summary)
+    assert "fake-quant path" in text
+    assert "NOT scored here" in text
+
+
+def test_a_real_run_does_not_carry_the_fake_mode_warning():
+    rows = [
+        row("bf16", "bf16", 0.60, bits_per_element=16.0, decode_gb_per_token=2.0,
+            ttft_ms=100.0, decode_tps=30.0, latency_mode="kernel"),
+        row("int8", "int8", 0.58, ttft_ms=60.0, decode_tps=45.0, latency_mode="kernel"),
+    ]
+    assert "fake-quant path" not in format_report(summarize(rows, SelectionConfig()))
 
 
 def test_per_task_table_and_the_ppl_disagreement_table_are_shown(summary):

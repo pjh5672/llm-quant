@@ -86,6 +86,22 @@ def annotate(rows, selection=None):
     return rows
 
 
+def prefill_is_measurable(row) -> bool:
+    """Whether this row's TTFT says anything about a deployment's prefill.
+
+    Under mode="fake" it does not. Fake quant stores dequantized bf16 weights and runs the
+    same bf16 GEMM whatever the weight dtype, so prefill compute is identical across the
+    grid -- but quantizing the activations and the KV cache still costs real wall time in
+    the simulation. The measured TTFT is therefore the *simulation's* overhead, ranking the
+    combinations by how much fake work they do rather than by how fast they would serve.
+
+    The phase 1 sweep showed this plainly: TTFT was flat at ~48ms across every weight dtype
+    and moved only with activation (~48 -> ~85ms) and KV cache (~48 -> ~59ms) quantization,
+    and at weight 2.0 it was enough to rank a strictly worse combination first.
+    """
+    return row.get("latency_mode") not in ("fake",)
+
+
 def score_rows(rows, selection):
     """Weighted score in percent-better-than-bf16 units, so the weights are comparable."""
     base = baseline_row(rows)
@@ -98,6 +114,9 @@ def score_rows(rows, selection):
         gains, missing = 0.0, []
         for metric, weight in weights.items():
             if not weight:
+                continue
+            if metric == "ttft_ms" and not prefill_is_measurable(r):
+                missing.append("ttft_ms (fake path)")
                 continue
             if base is None or not r.get(metric) or not base.get(metric):
                 missing.append(metric)

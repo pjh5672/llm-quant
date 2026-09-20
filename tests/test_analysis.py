@@ -170,3 +170,39 @@ def test_summarize_reports_the_weights_it_used(grid):
     summary = summarize(grid, SelectionConfig(bpv_weight=7.0))
     assert summary["weights"]["bpv"] == 7.0
     assert summary["n_runs"] == 5
+
+
+def test_fake_path_ttft_is_not_scored():
+    """Phase 1 measured TTFT on the fake path, where it tracks how much quant-dequant the
+    simulation does rather than how fast the model would serve. Scoring it at weight 2.0
+    ranked a combination that was worse on BOTH accuracy and decode traffic first."""
+    better = row("int8", "int8", 0.58, 10.1, 8.25, 1.00, act="bf16",
+                 ttft_ms=58.9, latency_mode="fake", kv_cache="int8")
+    worse = row("int8", "int8", 0.57, 10.1, 8.25, 1.02, act="bf16",
+                ttft_ms=48.6, latency_mode="fake", kv_cache="bf16")
+    rows = [
+        row("bf16", "bf16", 0.60, 10.0, 16.00, 2.0, quantize=False,
+            ttft_ms=48.6, latency_mode="fake"),
+        better,
+        worse,
+    ]
+    weights = SelectionConfig(acc_drop_limit_pct=None)
+    annotate(rows, weights)
+    score_rows(rows, weights)
+
+    assert better["score"] > worse["score"]
+    assert "ttft_ms (fake path)" in better["score_missing"]
+
+
+def test_a_real_run_still_scores_its_ttft():
+    rows = [
+        row("bf16", "bf16", 0.60, 10.0, 16.00, 2.0, quantize=False,
+            ttft_ms=100.0, latency_mode="kernel"),
+        row("int8", "int8", 0.58, 10.1, 8.25, 1.0, ttft_ms=50.0, latency_mode="kernel"),
+    ]
+    weights = SelectionConfig(acc_drop_limit_pct=None)
+    annotate(rows, weights)
+    score_rows(rows, weights)
+    assert rows[1]["score_missing"] == []
+    # halving TTFT at weight 2.0 is worth 100 points on its own
+    assert rows[1]["score"] > 100

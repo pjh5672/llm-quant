@@ -142,6 +142,9 @@ def run_one(config) -> dict:
                 cache_factory=cache_factory,
             )
         )
+        # which path produced those timings. On the fake path they measure the simulation,
+        # not a deployment, and the score has to know that -- see prefill_is_measurable.
+        row["latency_mode"] = "packed" if config.load_packed else config.mode
 
     row["eval_sec"] = time.time() - started
     del model
