@@ -6,12 +6,22 @@ decode shape, which is the regime the whole project is aimed at.
 """
 
 from llmquant.stages.s4_kernel.build import load_extension
+from llmquant.stages.s4_kernel.graph_decode import (
+    WARMUP_CALLS,
+    GraphedDecoder,
+    can_graph,
+    graphed_generate,
+)
 from llmquant.stages.s4_kernel.ops import fake_quantize_cuda
 from llmquant.stages.s4_kernel.quant_linear import KERNEL_MAX_ROWS, KernelQuantLinear
 
 __all__ = [
+    "WARMUP_CALLS",
+    "GraphedDecoder",
     "KERNEL_MAX_ROWS",
     "KernelQuantLinear",
+    "can_graph",
     "fake_quantize_cuda",
+    "graphed_generate",
     "load_extension",
 ]

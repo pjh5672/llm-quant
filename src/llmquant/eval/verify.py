@@ -41,7 +41,10 @@ def verification_plan(config, winner_row, mode="kernel"):
         activation=winner_row["activation"],
         kv_cache=winner_row["kv_cache"],
     )
-    base = replace(config, quant=quant, mode=mode)
+    # cuda_graph on for every row, baseline included: it is a property of how the decode
+    # loop is driven, not of the weights, so measuring it on one side only would fold a
+    # 1.45x that quantization did not cause into quantization's column.
+    base = replace(config, quant=quant, mode=mode, cuda_graph=True)
 
     plan = [("bf16 baseline", replace(base, quantize=False))]
     plan.append(("selected", base))

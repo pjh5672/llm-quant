@@ -47,6 +47,10 @@ class RunConfig:
     latency: bool = False                     # TTFT + decode TPS; see the note below
     latency_prompt_tokens: int = 512
     latency_new_tokens: int = 64
+    # Replay the decode step from a CUDA graph instead of relaunching it. Set by the
+    # verify stage for every row INCLUDING the baseline -- graphing only the
+    # quantized side would credit quantization with a speedup it did not produce.
+    cuda_graph: bool = False
     selection: SelectionConfig = field(default_factory=SelectionConfig)
     project_dir: Path = Path(".")
     sweep: dict = field(default_factory=dict)  # QuantConfig field -> list of values

@@ -167,7 +167,7 @@ def evaluate_generation_task(
 @torch.no_grad()
 def measure_latency(
     model, tokenizer, prompt_tokens: int = 512, new_tokens: int = 64, iters: int = 3,
-    cache_factory=None,
+    cache_factory=None, use_cuda_graph: bool = False,
 ):
     """Prefill TTFT and steady-state decode throughput, measured separately.
 
@@ -184,17 +184,26 @@ def measure_latency(
     ids = torch.randint(0, tokenizer.vocab_size, (1, prompt_tokens), device=device)
     inputs = {"input_ids": ids, "attention_mask": torch.ones_like(ids)}
 
+    graphed = False
+    if use_cuda_graph:
+        from llmquant.stages.s4_kernel import can_graph, graphed_generate
+
+        graphed = can_graph(model, cache_factory)
+
     def timed(n):
         torch.cuda.synchronize()
         start = time.perf_counter()
-        model.generate(
-            **inputs,
-            max_new_tokens=n,
-            min_new_tokens=n,  # keep every iteration the same length
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-            **({"past_key_values": cache_factory()} if cache_factory else {}),
-        )
+        if graphed:
+            graphed_generate(model, ids, n)
+        else:
+            model.generate(
+                **inputs,
+                max_new_tokens=n,
+                min_new_tokens=n,  # keep every iteration the same length
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+                **({"past_key_values": cache_factory()} if cache_factory else {}),
+            )
         torch.cuda.synchronize()
         return time.perf_counter() - start
 
@@ -207,6 +216,7 @@ def measure_latency(
     return {
         "ttft_ms": first * 1e3,
         "decode_tps": (new_tokens - 1) / decode_seconds,
+        "cuda_graph": graphed,
         "peak_vram_gb": torch.cuda.max_memory_allocated(device) / 1024**3,
         "latency_prompt_tokens": prompt_tokens,
         "latency_new_tokens": new_tokens,

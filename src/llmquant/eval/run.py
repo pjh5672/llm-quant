@@ -140,6 +140,7 @@ def run_one(config) -> dict:
                 prompt_tokens=config.latency_prompt_tokens,
                 new_tokens=config.latency_new_tokens,
                 cache_factory=cache_factory,
+                use_cuda_graph=config.cuda_graph,
             )
         )
         # which path produced those timings. On the fake path they measure the simulation,
