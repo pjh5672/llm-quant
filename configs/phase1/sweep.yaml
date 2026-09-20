@@ -37,12 +37,17 @@ selection:
   # decode traffic is weights plus the whole KV cache, so it depends on the context length
   # you care about. At 2k the weights dominate; past a few thousand the cache does.
   context_tokens: 2048
-  acc_drop_limit_pct: 5.0     # hard guard; the weights only rank what passes it
-  # priority: decode throughput > prefill latency > accuracy
+  # 15% rather than 5%: the goal here is the smallest weights that still generate, so the
+  # limit is a "does it still work" gate, not a quality bar. 15% admits attn=int8/mlp=int4
+  # (-11.64%) and excludes every int4-attention combination (-30% and worse), which on a
+  # four-way multiple choice scores near the 0.25 of random guessing.
+  acc_drop_limit_pct: 15.0
+  # priority: decode throughput > prefill latency > accuracy, and inside the limit the
+  # ranking is driven by bits per element -- the smallest weights that still generate.
   decode_speed_weight: 4.0    # scores decode_gb_at_context, the throughput proxy
   prefill_speed_weight: 2.0   # scores TTFT, but only on a real/kernel/packed run
   accuracy_weight: 1.0
-  bpv_weight: 0.5             # near-collinear with decode traffic, kept as a tie-breaker
+  bpv_weight: 3.0             # raised from 0.5: BPE is now what separates the survivors
 
 sweep:
   attn_weight: [int4, int8]
@@ -53,9 +58,11 @@ sweep:
   # activation scheme only to print a label. So int8 here costs +0.97% accuracy and
   # moves BPV and decode traffic by exactly 0.00. Sweeping it doubled the grid to
   # measure nothing.
-  # int4 is not offered: it costs +23.23% accuracy alone and drops below random guessing
-  # when combined with int4 MLP weights. QuantConfig rejects it.
-  kv_cache: [bf16, int8]
-  # head_weight is held at bf16: three independent sweeps put its accuracy effect at ~0,
-  # and its real trade-off (disk +252MB vs decode -262MB per token) is already known
-  # analytically. Add it back here if that trade-off needs re-measuring.
+  # head_weight is a real two-way choice and int4 is not offered on it (QuantConfig
+  # rejects it): lm_head writes the distribution the sampler reads. int8 measured +8.5%
+  # decode for no accuracy cost, so both sides are worth carrying through the grid.
+  head_weight: [bf16, int8]
+  # kv_cache is held at bf16. int4 is rejected outright, and int8 buys +1.28% accuracy
+  # while costing 32% of decode throughput on the kernel path -- already measured, and
+  # not a trade this grid needs to re-discover. int8 becomes interesting at long context
+  # or in batch, neither of which this sweep measures.

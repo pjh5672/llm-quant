@@ -145,3 +145,15 @@ def test_an_int4_kv_cache_is_refused():
 @pytest.mark.parametrize("dtype", ["int8", "bf16", None])
 def test_the_supported_kv_cache_dtypes_are_accepted(dtype):
     assert QuantConfig(kv_cache=dtype).kv_cache_bits in (8, None)
+
+
+def test_an_int4_lm_head_is_refused():
+    """lm_head writes the distribution the sampler reads and int4 there is unmeasured;
+    attn and mlp are where int4 gets tried."""
+    with pytest.raises(ValueError, match=r"head_weight='int4'"):
+        QuantConfig(head_weight="int4")
+
+
+@pytest.mark.parametrize("dtype", ["int8", "bf16", None])
+def test_the_supported_head_dtypes_are_accepted(dtype):
+    QuantConfig(head_weight=dtype)

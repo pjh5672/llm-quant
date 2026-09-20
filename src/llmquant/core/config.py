@@ -45,6 +45,11 @@ ACTIVATION_DTYPES = ("int8", BF16)
 # perplexity reports the damage as +0.18%, because a perplexity pass never reads the cache
 # back. int8 costs +1.28% and halves cache traffic, so the useful range is int8 to bf16.
 KV_CACHE_DTYPES = ("int8", BF16)
+# lm_head is int8 or bf16 only. It is read in full on every decode step, so it is the one
+# weight whose dtype moves decode traffic the most per byte stored -- but it also writes the
+# distribution the sampler reads, and int4 there was never measured. Until it is, the head
+# is not a place to experiment: everything downstream of a bad logit is a bad token.
+HEAD_DTYPES = ("int8", BF16)
 
 
 def normalize_dtype(dtype) -> str:
@@ -93,6 +98,11 @@ class QuantConfig:
             raise ValueError(
                 f"kv_cache={self.kv_cache!r}: the KV cache supports only "
                 f"{list(KV_CACHE_DTYPES)}; see docs/w4a8_rtn_notes.md."
+            )
+        if normalize_dtype(self.head_weight) not in HEAD_DTYPES:
+            raise ValueError(
+                f"head_weight={self.head_weight!r}: lm_head supports only "
+                f"{list(HEAD_DTYPES)}; see docs/w4a8_rtn_notes.md."
             )
 
     def scheme(self, target: str) -> QuantizationScheme | None:
