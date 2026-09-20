@@ -157,6 +157,19 @@ embedding. Decode does not care, because it reads `lm_head` in full every token 
 row-indexes the embedding. Hence disk +252 MB and decode traffic −237 MB/token at once.
 Stage 1 prints this before the sweep runs, so the next model does not repeat the confusion.
 
+## What was tried and rejected
+
+`prototypes/fused_prefill_gemm/` holds a working, bit-exact fused int8-weight GEMM that is
+not shipped, because it runs at about a third of cuBLAS.
+
+Decode already fuses: the GEMV reads int weights and dequantizes in registers, so no
+dequantized copy is ever written. Prefill does not — it materializes the whole weight in
+bf16 every forward, and that dequant costs 27.6 ms against 23.3 ms for the GEMM it feeds,
+which is the entire TTFT regression. Fusing is the only way to remove it, and a hand-written
+tensor-core GEMM landed at 0.34x of cuBLAS where 0.43x was break-even. The prototype's
+README has the numbers and the list of optimizations it leaves out; the next attempt, if
+there is one, should use CUTLASS rather than more hand-tuning.
+
 ## Layout
 
 Padding and grouping are defined once, in `core/layout.py`, and every stage reads from there

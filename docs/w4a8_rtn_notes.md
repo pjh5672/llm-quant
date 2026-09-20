@@ -62,8 +62,10 @@ sweep이 끝났으므로 필수 작업은 없다. 남은 건 선택지다.
   4개 projection이 전부 2배가 되어 **int8 attention이 bf16과 같은 바이트**가 된다.
 
 ### 끝까지 확인하지 못한 것
-- **TTFT가 fake 48ms → kernel 79ms로 나빠진다.** prefill마다 weight를 dequant하는 비용.
-  없애려면 텐서코어 mainloop에 dequant를 fuse해야 한다(AWQ/Marlin 방식, 훨씬 큰 작업).
+- **TTFT가 bf16 48.6ms → kernel 77.8ms로 나빠진다.** prefill마다 weight를 dequant하는 비용이
+  맞고(27.6ms), 2026-09-20에 fusing을 프로토타입까지 만들어 시도했으나 **기각**했다 —
+  손으로 짠 GEMM이 cuBLAS의 0.34배라 fusing 이득을 도로 까먹는다.
+  "prefill fusing" 절 참고. 다음 수가 있다면 CUTLASS다.
 
 ### 다시 시작하는 방법
 ```powershell
@@ -359,6 +361,74 @@ int-int 커널을 만들어도 답은 안 바뀐다:
 
 **A8은 int 연산으로 버는 게 아니라 int weight를 직접 읽는 대역폭으로 버는 것이고,
 그건 이미 weight-only 커널이 하고 있다.**
+
+---
+
+## prefill fusing — 시도하고 기각 (2026-09-20) — `prototypes/fused_prefill_gemm/`
+
+### 문제: prefill의 dequant가 GEMM보다 비싸다
+
+`mode=kernel`에서 decode(M<=4)는 `wq_gemv.cu`가 int weight를 읽어 **레지스터에서** dequant한다.
+그런데 prefill(M>4)은 정반대로 `_dequantized_weight()`가 **weight 전체를 bf16으로 펼쳐** 쓰고
+cuBLAS에 넘긴다. 매 forward마다.
+
+M=512, 모델의 모든 Linear 합산 실측:
+
+```
+bf16 GEMM만            23.3 ms    <- bf16 baseline이 내는 비용
++ dequant              50.9 ms    <- mode=kernel이 내는 비용 (dequant가 27.6)
+```
+
+**dequant가 그걸 먹이는 GEMM보다 비싸다.** TTFT 48.6 -> 77.8ms 회귀의 전부다.
+
+### 먼저 틀린 가설: fp32 중간 텐서
+
+`qweight * _broadcast_scale`이 scale이 fp32라 **fp32 텐서를 통째로 만든다**(4.6GB 쓰고
+4.6GB 읽음). 산술상 32ms로 실측 회귀 31.2ms와 정확히 맞아떨어져서 이게 원인이라고 봤다.
+**틀렸다.** 블록 단위로 쪼개 fp32 중간값을 캐시에 머물게 해도 27.6 -> 28.0ms로 오히려 나빠졌다.
+비용은 **bf16 출력 쓰기와 int8 읽기 자체**고, fusing 말고는 없앨 방법이 없다.
+(scale을 bf16으로 내리는 건 금지 — int8 스텝의 49%를 먹는다. "미결 해결" 절 참고.)
+
+### 타당성 프로토타입 결과: 0.34x, 기각
+
+하나의 템플릿에서 두 커널을 뽑아 B 타일 채우는 방식만 다르게 했다 —
+`gemm_bf16`(기성 bf16 읽기)로 **손으로 짠 GEMM의 수준 자체**를 재고,
+`gemm_fused`(int8 + fp32 group scale을 공유메모리로 dequant)로 **fusing의 추가 비용**을 쟀다.
+
+```
+shape        N     K    cuBLAS   proto16    vs    fused8    vs    maxerr
+gate/up   8192  2048    0.396m   1.042m   0.38x   1.155m  0.34x  0.00e+00
+down      2048  8192    0.388m   1.225m   0.32x   1.710m  0.23x  0.00e+00
+q/o       2048  2048    0.109m   0.248m   0.44x   0.444m  0.25x  0.00e+00
+```
+
+**`maxerr 0.00e+00`** — fused 결과가 cuBLAS 경로와 **비트 단위로 동일**하다. 산술은 옳고
+속도만 틀렸다.
+
+```
+현재 (cuBLAS + 별도 dequant)   0.396 + 0.516 = 0.912 ms   (gate/up)
+프로토타입 fused                               1.155 ms   <- 27% 더 느림
+bf16 baseline (진짜 목표)                      0.396 ms
+```
+
+**현재 경로를 이기는 데 필요한 건 cuBLAS의 0.43배뿐인데 0.34배로 미달**이다.
+TTFT를 48ms로 되돌리려면 약 1.0배, 즉 cuBLAS급이 필요하다.
+
+### 빠진 것 (전부 표준 기법이고 전부 CUTLASS에 있다)
+
+- **`cp.async` 더블 버퍼링 없음** — global 로드와 연산이 직렬화. 가장 큰 손실이고
+  `down`(K=8192, K 루프가 가장 김)이 0.23x로 유독 나쁜 이유.
+- **타일 64x64x32** — cuBLAS는 128x128 이상.
+- **4 워프** — 지연 은폐 점유율 부족.
+- swizzle 대신 패딩 — 영향 작음.
+
+직접 다 넣으면 0.7~0.9x는 가능해 보이지만 **며칠 작업에 cuBLAS 동등 보장이 없고**,
+상금은 prefill에 국한된다 — TTFT 77.8 -> ~48ms, **2순위에서 1.6x이고 decode는 그대로**.
+그래서 다음 수가 있다면 손 튜닝이 아니라 **CUTLASS mixed-input GEMM**이다. 단 그쪽도
+`core/layout.py`의 canonical form(head별 패딩, K 128마다 fp32 scale 하나)에 맞춰야 한다.
+
+**결정: 기각하고 보존.** `prototypes/fused_prefill_gemm/`에 코드와 벤치가 있고
+`src/llmquant/`는 아무것도 import하지 않는다.
 
 ---
 

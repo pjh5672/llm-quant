@@ -21,17 +21,14 @@ evaluation:
   task_limit: 300         # 300 keeps a 24-run grid near an hour; null uses each task default
   ppl: true               # secondary: cheap and comparable, but teacher-forced
   metric: wikitext2
-  # TTFT and TPS are measured and reported, but they cannot separate the combinations yet:
-  # every one stores dequantized bf16 weights, so they move the same bytes and run the same
-  # bf16 GEMM. Shown anyway -- a flat column is a result, not a gap. The score uses the
-  # analytic decode traffic instead, which does separate them.
-  # TPS is flat as predicted. TTFT is NOT: it is flat across weight dtypes but moves with
-  # activation (~48 -> ~85ms) and KV cache (~48 -> ~59ms) quantization, because the fake
-  # path pays real wall time to simulate them. That is simulation overhead, not prefill,
-  # so the score drops it on this path -- see analysis.prefill_is_measurable.
-  latency: true
-  latency_prompt_tokens: 512
-  latency_new_tokens: 64
+  # The fake path says nothing about speed, so it does not measure it. Weights are stored
+  # already dequantized, so every combination runs the same bf16 GEMM and moves the same
+  # bytes: TPS is flat by construction, and TTFT is worse than flat -- it moves only with
+  # activation (~48 -> ~85ms) and KV cache (~48 -> ~59ms) quantization, timing the wall
+  # clock of simulating them. Ranking on that ranks how much fake work a run does.
+  # Speed belongs to stage 4, which re-measures the selected combination on mode=kernel.
+  # Here: accuracy and bits per element, which the fake path does report honestly.
+  latency: false
   generation: true        # stage 2 on the shortlist: LAMBADA + agreement with bf16
   lambada_limit: 500
   max_new_tokens: 64
@@ -50,7 +47,12 @@ selection:
 sweep:
   attn_weight: [int4, int8]
   mlp_weight: [int4, int8]
-  activation: [bf16, int8]
+  # activation is NOT swept: it is held at bf16 above. No mode in this repo runs an
+  # int8 x int8 matmul -- fake quantize-dequantizes then multiplies in bf16, real
+  # multiplies in fp32 for exactness, and the kernel is weight-only and reads the
+  # activation scheme only to print a label. So int8 here costs +0.97% accuracy and
+  # moves BPV and decode traffic by exactly 0.00. Sweeping it doubled the grid to
+  # measure nothing.
   # int4 is not offered: it costs +23.23% accuracy alone and drops below random guessing
   # when combined with int4 MLP weights. QuantConfig rejects it.
   kv_cache: [bf16, int8]
