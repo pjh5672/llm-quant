@@ -268,3 +268,50 @@ def test_partial_coverage_is_reported_with_the_missing_modules():
     assert 0.0 < cov["matched_fraction"] < 1.0
     note = " ".join(fact_warnings(model_facts(Mixed(), recipe, group_size=128)))
     assert "stay bf16" in note
+
+
+class StackedExperts(nn.Module):
+    """How transformers 5.x stores a Mixture-of-Experts: not Linears, stacked Parameters."""
+
+    def __init__(self, experts=8, hidden=256, inter=512):
+        super().__init__()
+        self.gate_up_proj = nn.Parameter(torch.empty(experts, 2 * inter, hidden))
+        self.down_proj = nn.Parameter(torch.empty(experts, hidden, inter))
+
+
+class MoeModel(TinyModel):
+    def __init__(self):
+        super().__init__()
+        layer = self.model.layers[0]
+        del layer.mlp
+        layer.block_sparse_moe = nn.Module()
+        layer.block_sparse_moe.experts = StackedExperts(hidden=2048, inter=4096)
+
+
+def test_weights_outside_any_linear_are_counted_against_coverage():
+    """A Linear-only denominator reported 100% on a model 97% untouched: this project
+    quantizes by replacing Linear modules, and a MoE keeps its experts as Parameters."""
+    from llmquant.eval.inspect import pattern_coverage
+
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="int8",
+                         head_weight="int8").to_modifier()
+    cov = pattern_coverage(MoeModel(), recipe)
+    assert cov["outside_linear_params"] > 0
+    assert cov["matched_fraction"] < 0.2
+    assert any("experts" in n for n in cov["outside_linear_tensors"])
+
+    note = " ".join(fact_warnings(model_facts(MoeModel(), recipe, group_size=128)))
+    assert "NOT in nn.Linear" in note
+    assert "Mixture-of-Experts" in note
+
+
+def test_the_input_embedding_is_not_counted_against_coverage():
+    """It is excluded by design -- decode row-indexes it rather than reading it -- so it
+    must not look like a gap the way stacked experts do."""
+    from llmquant.eval.inspect import pattern_coverage
+
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="int8",
+                         head_weight="int8").to_modifier()
+    cov = pattern_coverage(TinyModel(), recipe)
+    assert cov["matched_fraction"] == 1.0
+    assert cov["outside_linear_params"] == 0

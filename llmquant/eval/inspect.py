@@ -94,10 +94,19 @@ def pattern_coverage(model, recipe) -> dict:
     matched = unmatched = 0
     missed = []
     fused_qkv = []
+    seen = set()
+    # The input embedding is excluded by design, not by accident: decode row-indexes it
+    # rather than reading it, so quantizing it would buy nothing. lm_head is the tensor
+    # that gets read in full, and when the two are tied they are the same tensor and it is
+    # already counted through lm_head.
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            seen.add(id(module.weight))
     for name, module in model.named_modules():
         if not isinstance(module, nn.Linear):
             continue
         params = module.weight.numel()
+        seen.add(id(module.weight))
         covered = recipe is not None and recipe.scheme_for(name) is not None
         if covered:
             matched += params
@@ -112,12 +121,28 @@ def pattern_coverage(model, recipe) -> dict:
         else:
             unmatched += params
             missed.append(name)
-    total = matched + unmatched
+
+    # Weights that are not in any Linear. This is not a rounding error on a
+    # Mixture-of-Experts model: transformers keeps Mixtral's experts as stacked
+    # nn.Parameters, so they are invisible to a Linear walk while holding most of the
+    # model. Counting only Linears reported 100% coverage on a model 97% untouched.
+    outside = []
+    outside_params = 0
+    for name, param in model.named_parameters():
+        if id(param) in seen or param.ndim < 2:
+            continue  # norms and biases are 1-D and are not quantization targets
+        outside_params += param.numel()
+        outside.append((name, param.numel()))
+    outside.sort(key=lambda kv: -kv[1])
+
+    total = matched + unmatched + outside_params
     return {
         "matched_params": matched,
         "unmatched_params": unmatched,
+        "outside_linear_params": outside_params,
         "matched_fraction": matched / total if total else 0.0,
         "unmatched_modules": missed,
+        "outside_linear_tensors": [n for n, _ in outside[:6]],
         "unexpected_attn_modules": fused_qkv,
     }
 
@@ -185,9 +210,19 @@ def fact_warnings(facts: dict) -> list[str]:
             missed = coverage["unmatched_modules"]
             shown = ", ".join(missed[:3]) + ("..." if len(missed) > 3 else "")
             notes.append(
-                f"only {fraction:.0%} of Linear parameters match the recipe's patterns; "
+                f"only {fraction:.0%} of the model's weights match the recipe's patterns; "
                 f"{len(missed)} Linears stay bf16 ({shown}). Accuracy will look better "
                 "than the dtype suggests and the size saving will be smaller."
+            )
+        outside = coverage.get("outside_linear_params", 0)
+        total = (coverage["matched_params"] + coverage["unmatched_params"] + outside)
+        if total and outside / total > 0.05:
+            names = ", ".join(coverage.get("outside_linear_tensors", [])[:3])
+            notes.append(
+                f"{outside / total:.0%} of the weights are NOT in nn.Linear modules "
+                f"({names}). This project quantizes by replacing Linears, so those are "
+                "untouched whatever the config says -- a Mixture-of-Experts keeps its "
+                "experts as stacked parameters and they are most of the model."
             )
         if coverage["unexpected_attn_modules"]:
             names = ", ".join(coverage["unexpected_attn_modules"][:3])
