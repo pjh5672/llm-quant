@@ -3,7 +3,16 @@ __pycache__/
 *.egg-info/
 build/
 results/
-experiments/
+
+# experiments/ holds model.bin and copied configs, which are too big or too redundant for
+# git -- but sweep.json is tens of KB and is the whole study: the rows, the selection, the
+# model facts and the real-path verification, and the input phase1_analyze.py re-reads
+# without a GPU. Git cannot re-include a file whose parent DIRECTORY is excluded, so the
+# contents are excluded rather than the directory itself.
+experiments/*
+!experiments/*/
+experiments/*/*
+!experiments/*/sweep.json
 *.log
 csrc/*.exe
 csrc/*.exp
