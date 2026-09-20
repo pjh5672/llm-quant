@@ -16,7 +16,7 @@ quantization:
   mlp_weight: int4        # mlp.{gate,up,down}_proj
   head_weight: bf16       # lm_head
   activation: int8        # input of every quantized Linear above
-  kv_cache: bf16          # reserved, not implemented yet
+  kv_cache: bf16          # int8 costs 32% of decode throughput; see docs
   group_size: 128         # shared by weights and activations
 
 evaluation:

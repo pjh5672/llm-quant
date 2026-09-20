@@ -62,15 +62,13 @@ sweep이 끝났으므로 필수 작업은 없다. 남은 건 선택지다.
 ### 끝까지 확인하지 못한 것
 - **TTFT가 fake 48ms → kernel 79ms로 나빠진다.** prefill마다 weight를 dequant하는 비용.
   없애려면 텐서코어 mainloop에 dequant를 fuse해야 한다(AWQ/Marlin 방식, 훨씬 큰 작업).
-- `csrc/w4a8_rtn_naive.cu`, `build_and_run.bat`은 초기 group-wise 설계의 잔재. 현재
-  `src/llmquant/stages/s4_kernel/`과 무관하므로 지워도 된다.
 
 ### 다시 시작하는 방법
 ```powershell
 cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
-.\.venv\Scripts\python.exe -m pytest tests -q                                       # 251개
+.\.venv\Scripts\python.exe -m pytest tests -q                                       # 269개
 .\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\phase1\w8a16.yaml     # 단일 실행
-.\.venv\Scripts\python.exe examples\phase1_sweep.py --cfg configs\phase1\sweep.yaml # 전체 ~1.5시간
+.\.venv\Scripts\python.exe examples\study.py --cfg configs\phase1\sweep.yaml       # 전체 ~1.5시간
 .\.venv\Scripts\python.exe examples\phase4_bench_gemm.py                            # GEMM 속도
 .\.venv\Scripts\python.exe examples\phase1_analyze.py experiments\phase1-sweep\sweep.json --bpv-weight 5
 ```
@@ -606,21 +604,13 @@ llm-quant/
 │       └── benchmark.py                    # GEMM 벤치 (bf16 vs int8 vs int8 g128)
 ├── examples/
 │   ├── auto_llm.py                         # config 1개 실행 (phase 무관)
-│   ├── phase1_sweep.py                     # 그리드 확장 + 2단계 평가 + 분석 리포트
+│   ├── study.py                            # 전체 파이프라인 (구조점검→sweep→선정→실측검증→리포트)
 │   ├── phase1_analyze.py                   # 저장된 sweep.json 재분석 (GPU 불필요)
-│   ├── phase1_generation.py                # 끝난 sweep에 stage 2(생성 평가)만 얹기
 │   ├── phase5_chat.py                      # packed 모델로 대화
 │   └── phase4_bench_gemm.py                # GEMM 속도 측정
-├── tests/                                  # 251개
-│   ├── test_quantization.py  11            ├── test_cuda_kernel.py  41 (bit-exact)
-│   ├── test_config.py        21            ├── test_parser.py       27
-│   ├── test_analysis.py      15            ├── test_metrics.py       8 (디스크 vs decode 충돌)
-│   ├── test_tasks.py         24 (채점 파싱) ├── test_report.py        8
-│   ├── test_grouping.py      13 (패딩/head) ├── test_kv_cache.py      8
-│   ├── test_real_quant.py    16 (Phase 2)   ├── test_kernel_linear.py 18 (Phase 4)
-│   ├── test_packing.py       16 (Phase 3)   ├── test_chat.py           8 (Phase 5)
-│   └── test_benchmark.py      4
-├── csrc/w4a8_rtn_naive.cu, build_and_run.bat   # 초기 naive 커널 잔재 (지워도 됨)
+├── tests/                                  # 269개
+│   └── (파일별 개수는 `pytest --collect-only -q`로 확인)
+├── reports/<project>.md                    # study.py가 쓰는 모델별 리포트 (git 포함)
 ├── results/                                # git 제외 (구 결과 보관)
 └── experiments/<project>/                  # git 제외, config 복사 + result.json / sweep.json
 ```
@@ -633,7 +623,7 @@ core가 stage에 묶여버리므로 함수 안에서 지연 import한다.
 ```bash
 python examples/auto_llm.py --cfg configs/phase1/w4a8.yaml
 python examples/auto_llm.py --cfg configs/phase1/w4a8.yaml --mlp-weight int8   # CLI가 이김
-python examples/phase1_sweep.py --cfg configs/phase1/sweep.yaml
+python examples/study.py --cfg configs/phase1/sweep.yaml
 ```
 ```python
 from llmquant import QuantConfig, oneshot
@@ -895,11 +885,10 @@ PPL은 teacher-forced라 **생성 경로를 한 번도 안 건드린다.** 디�
 전체 그리드는 PPL(런당 ~1분)로 거르고, **Pareto front + 기준 통과 조합에만** 생성 평가를
 돌린다. 17조합 전부에 돌리면 1시간을 넘긴다.
 
-stage 1은 생성 지표를 추가해도 안 변하므로, **이미 끝난 sweep에 stage 2만 얹을 수 있다**:
-```bash
-python examples/phase1_generation.py experiments/phase1-sweep/sweep.json
-python examples/phase1_generation.py experiments/phase1-sweep/sweep.json --generation-task gsm8k
-```
+stage 2는 `study.py`가 sweep과 같은 실행 안에서 돌린다. 예전에는 끝난 sweep에 stage 2만
+얹는 `phase1_generation.py`가 있었지만, `config_for()`가 **kv_cache를 복원하지 않아**
+잘못된 캐시 dtype으로 재평가하는 버그가 있었고 study.py가 쓰는 sweep.json의 새 필드
+(`model_facts`, `verification`)를 덮어썼다. 필요해지면 현재 코드 위에 다시 만드는 게 맞다.
 
 ### 스모크 결과 — ⚠️ PPL이 손상을 과소평가한다
 (LAMBADA 100개, 32토큰 — 본 실행보다 작은 설정. n=100은 노이즈 ±5%p)
@@ -1232,4 +1221,5 @@ tie_word_embeddings=true라서 int8로 해도 크기 이득이 없음(+약 245MB
 - real quant와 fake quant 역산값 정확히 일치
 - int4 pack/unpack round-trip 완전 일치
 - naive W4A8 커널 시뮬레이션 vs fp32 행렬곱: 평균 상대오차 ~10.2% (합성 랜덤 데이터 기준)
-- 검증 스크립트는 파일로 저장된 적 없음. 같은 로직을 C++로 옮긴 것이 `csrc/w4a8_rtn_naive.cu`.
+- 검증 스크립트는 파일로 저장된 적 없음. C++로 옮긴 `csrc/w4a8_rtn_naive.cu`도 2026-09-20에 삭제됨
+  (현재 `stages/s4_kernel/`과 무관한 초기 설계의 잔재였다).

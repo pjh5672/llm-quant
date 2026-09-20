@@ -113,7 +113,6 @@ def test_no_cache_is_passed_when_none_is_asked_for(session):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 def test_a_packed_model_holds_a_two_turn_conversation(tmp_path):
-    import torch.nn as nn
 
     from llmquant.core.config import ModelArgs, QuantConfig
     from llmquant.core.model import load_pretrained

@@ -17,7 +17,6 @@ only 1.03-1.04x over bf16 on this GPU. The win is bandwidth, and bandwidth only 
 where decode lives.
 """
 
-import torch
 import torch.nn as nn
 
 from llmquant.core.observers import group_view, pad_to_group
