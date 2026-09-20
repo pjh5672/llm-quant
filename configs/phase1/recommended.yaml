@@ -1,14 +1,16 @@
 # The combination the 25-run phase 1 sweep selected (see docs, "Phase 1 최종 sweep").
 #
-#   accuracy  -2.97% on ARC-Easy / ARC-Challenge / OpenBookQA
-#   decode    74.3 tok/s measured on mode=kernel vs 77.3 bf16 (0.96x)
-#   VRAM      1.65 GB peak vs 2.42 bf16 (-32%)
-#   BPV       10.98
+#   accuracy  -3.43% on ARC-Easy / ARC-Challenge / OpenBookQA (0.4700 vs 0.4867)
+#   decode    80.6 tok/s measured on mode=kernel vs 77.3 bf16 (1.04x)
+#   TTFT      79.8ms vs 48.6 bf16 -- prefill dequantizes weights every pass
+#   VRAM      1.91 GB peak vs 2.42 bf16 (-21%)
+#   BPV       9.33
 #
-# The compression is real; the decode speedup is not, on a 1B model. Only ~45% of a decode
-# step is weight bandwidth here, so reading int8 weights instead of bf16 does not pay for
-# the dequant on the way in. It should pay off on a larger model, where weights dominate
-# the step. Measure before assuming: examples/auto_llm.py --mode kernel.
+# Quantizing the transformer weights alone does NOT speed up decode on a 1B model: that is
+# 74.3 tok/s, below the bf16 baseline. Only ~45% of a decode step is weight bandwidth here,
+# so halving the weight bytes cannot pay for the dequant on the way in. What puts this over
+# the baseline is head_weight, below. Larger models should behave better, since weights take
+# a bigger share of the step. Measure before assuming: examples/auto_llm.py --mode kernel.
 #
 # Why these four axes are what they are:
 #   attn int8  int4 attention costs +30.08% accuracy and saves the least (dBPV -1.09).
@@ -17,6 +19,13 @@
 #              the 5% limit. Use configs/phase1/w8a4-mlp.yaml if -12.56% is acceptable.
 #   act  bf16  int8 activations cost accuracy (+0.97%) and buy exactly nothing: dBPV 0.00,
 #              no decode traffic saved. There is no int-int GEMM path for them to feed.
+#   head int8  the one change that actually buys decode speed: 74.3 -> 80.6 tok/s (+8.5%),
+#              and accuracy barely notices (0.4722 -> 0.4700 over 300 examples, PPL 13.188
+#              -> 13.190). It reads oddly on disk -- the file grows by 252MB -- because
+#              this model ties lm_head to the embedding, so quantizing it does not shrink
+#              a tensor, it unties one and adds a 258MB int8 copy beside the bf16
+#              embedding. Decode does not care: it reads lm_head in full every token
+#              (501MB bf16 -> 258MB int8) and only row-indexes the embedding.
 #   kv   bf16 int8 looked nearly free on accuracy (+1.28%) and the analytic score liked it,
 #              but measuring it on mode=kernel settles it the other way: decode drops from
 #              74.3 to 50.3 tok/s, -32%. The cache is quantized in PyTorch on every decode
@@ -45,7 +54,7 @@ quantization:
   mode: fake
   attn_weight: int8
   mlp_weight: int8
-  head_weight: bf16
+  head_weight: int8
   activation: bf16
   kv_cache: bf16
   group_size: 128
