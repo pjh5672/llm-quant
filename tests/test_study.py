@@ -6,6 +6,7 @@ lm_head, and a projection that does not survive measurement.
 """
 
 import pytest
+import torch
 import torch.nn as nn
 
 from llmquant.core.config import QuantConfig
@@ -285,24 +286,50 @@ class MoeModel(TinyModel):
         layer = self.model.layers[0]
         del layer.mlp
         layer.block_sparse_moe = nn.Module()
-        layer.block_sparse_moe.experts = StackedExperts(hidden=2048, inter=4096)
+        # sized so the experts outweigh lm_head, as they do on a real MoE: on
+        # Mixtral-8x7B they are 97% of the model
+        layer.block_sparse_moe.experts = StackedExperts(hidden=2048, inter=8192)
 
 
-def test_weights_outside_any_linear_are_counted_against_coverage():
-    """A Linear-only denominator reported 100% on a model 97% untouched: this project
-    quantizes by replacing Linear modules, and a MoE keeps its experts as Parameters."""
+def test_stacked_experts_count_as_covered_when_the_recipe_quantizes_them():
+    """They hold most of a MoE, and a Linear-only denominator once called a model 97%
+    untouched fully covered. Now they are quantized in place and counted."""
     from llmquant.eval.inspect import pattern_coverage
 
     recipe = QuantConfig(attn_weight="int8", mlp_weight="int8",
                          head_weight="int8").to_modifier()
     cov = pattern_coverage(MoeModel(), recipe)
-    assert cov["outside_linear_params"] > 0
-    assert cov["matched_fraction"] < 0.2
-    assert any("experts" in n for n in cov["outside_linear_tensors"])
+    assert cov["matched_fraction"] == 1.0
+    assert cov["outside_linear_params"] == 0
 
-    note = " ".join(fact_warnings(model_facts(MoeModel(), recipe, group_size=128)))
+
+def test_stacked_experts_left_bf16_are_reported_as_unmatched_not_unreachable():
+    """bf16 by choice is a different thing from bf16 because nothing could reach it."""
+    from llmquant.eval.inspect import pattern_coverage
+
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="bf16",
+                         head_weight="int8").to_modifier()
+    cov = pattern_coverage(MoeModel(), recipe)
+    assert cov["outside_linear_params"] == 0
+    assert any("experts" in n for n in cov["unmatched_modules"])
+    assert cov["matched_fraction"] < 1.0
+
+
+def test_weights_no_recipe_can_reach_are_reported_as_outside():
+    from llmquant.eval.inspect import pattern_coverage
+
+    class Unreachable(TinyModel):
+        def __init__(self):
+            super().__init__()
+            self.model.layers[0].strange = nn.Module()
+            self.model.layers[0].strange.stacked = nn.Parameter(torch.zeros(4, 2048, 2048))
+
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="int8",
+                         head_weight="int8").to_modifier()
+    cov = pattern_coverage(Unreachable(), recipe)
+    assert cov["outside_linear_params"] > 0
+    note = " ".join(fact_warnings(model_facts(Unreachable(), recipe, group_size=128)))
     assert "NOT in nn.Linear" in note
-    assert "Mixture-of-Experts" in note
 
 
 def test_the_input_embedding_is_not_counted_against_coverage():

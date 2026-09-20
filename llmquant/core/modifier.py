@@ -21,6 +21,20 @@ O_PROJ_PATTERN = r"re:.*\.self_attn\.o_proj$"
 # no reason to share a dynamic range, would share a scale.
 QKV_PATTERN = r"re:.*\.self_attn\.(q|k|v|qkv)_proj$"
 
+# A Mixture-of-Experts keeps its experts as one stacked Parameter per projection rather
+# than as Linear modules -- transformers 5.x gives Mixtral `experts.gate_up_proj` of shape
+# [num_experts, 2 * intermediate, hidden] and `experts.down_proj` of [num_experts, hidden,
+# intermediate]. Each slice [out, in] is used exactly as a Linear weight, reduction on the
+# last axis, so the MLP rule already describes it: group along the reduction axis, pad the
+# tail. Grouping on the last axis of the stacked tensor gives every expert its own scales
+# for free.
+#
+# The router is deliberately NOT here. It is one [num_experts, hidden] matrix whose output
+# is argmaxed into a discrete choice of expert, so an error there does not perturb a value,
+# it routes the token to a different expert. It is also small enough that quantizing it
+# would save nothing worth having.
+MOE_EXPERT_PATTERN = r"re:.*\.experts\.(gate_up_proj|down_proj|w1|w2|w3)$"
+
 
 def _resolve(scheme):
     if scheme is None or isinstance(scheme, QuantizationScheme):
@@ -35,6 +49,21 @@ def _matches(name, patterns):
         if name == p:
             return True
     return False
+
+
+def stacked_expert_parameters(model):
+    """(name, Parameter) for every stacked expert weight, quantized or not.
+
+    Separate from QuantizationModifier.expert_parameters because costing a model has to
+    find these whatever the recipe says: a bf16 baseline reads only top_k of its experts
+    per token too, and scaling that for the quantized run alone would credit quantization
+    with the router's work.
+    """
+    return [
+        (name, param)
+        for name, param in model.named_parameters()
+        if param.ndim >= 2 and _matches(name, (MOE_EXPERT_PATTERN,))
+    ]
 
 
 def _set_module(model, name, module):
@@ -128,4 +157,42 @@ class QuantizationModifier:
                 replacements.append((name, quant_cls.from_linear(module, scheme)))
         for name, new_module in replacements:
             _set_module(model, name, new_module)
+        self._apply_to_expert_parameters(model)
+        return model
+
+    def expert_parameters(self, model: nn.Module):
+        """(name, Parameter) for every stacked expert weight the recipe should quantize."""
+        if self.mlp_scheme is None:
+            return []
+        return stacked_expert_parameters(model)
+
+    def _apply_to_expert_parameters(self, model: nn.Module):
+        """Quantize stacked expert weights in place.
+
+        There is no module to swap here, so `mode` cannot be honoured by choosing a Linear
+        class. Fake quant needs no module: quantize-dequantize writes a bf16 tensor of the
+        same shape back into the Parameter and the expert forward is unchanged. Real and
+        kernel modes would need int storage and a batched expert kernel, neither of which
+        exists, so they say so rather than quantizing the attention and silently leaving
+        most of the model alone.
+        """
+        import torch
+
+        from llmquant.core.quant_ops import fake_quantize
+
+        targets = self.expert_parameters(model)
+        if not targets:
+            return
+        if self.mode != "fake":
+            raise NotImplementedError(
+                f"mode={self.mode!r} cannot quantize a Mixture-of-Experts: its experts are "
+                f"stacked Parameters, not Linear modules, so there is no module to swap "
+                f"and no batched expert kernel to swap it for. Use mode='fake' to measure "
+                f"the accuracy cost. ({len(targets)} expert tensors found, e.g. "
+                f"{targets[0][0]})"
+            )
+        args = self.mlp_scheme.weights
+        with torch.no_grad():
+            for _, param in targets:
+                param.copy_(fake_quantize(param.data, args).to(param.dtype))
         return model

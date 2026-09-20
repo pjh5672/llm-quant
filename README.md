@@ -170,10 +170,35 @@ Not every HuggingFace model. The recipe finds layers by name, and those names ar
 self_attn.{q,k,v,o}_proj      mlp.{gate,up,down}_proj      lm_head
 ```
 
-That covers Llama 2/3, Mistral, Qwen2/2.5, Gemma and Phi-3. It does **not** cover
+plus the stacked expert weights a Mixture-of-Experts uses instead of an MLP:
+
+```
+experts.{gate_up_proj,down_proj}      (and w1/w2/w3 on older transformers)
+```
+
+That covers Llama 2/3, Mistral, Qwen2/2.5, Gemma, Phi-3 and Mixtral. It does **not** cover
 architectures that name or shape things differently — GPT-2 (`attn.c_attn`, and `Conv1D`
-rather than `Linear`), Falcon and GPT-NeoX (`query_key_value`), OPT (`fc1`/`fc2` outside any
-`mlp`), or Mixtral's expert MLPs.
+rather than `Linear`), Falcon and GPT-NeoX (`query_key_value`), or OPT (`fc1`/`fc2` outside
+any `mlp`).
+
+A Mixture-of-Experts is quantized but only on the fake path. transformers keeps Mixtral's
+experts as stacked `nn.Parameter`s rather than Linear modules, and this project quantizes by
+replacing Linears, so there is no module to swap. Fake quant does not need one — it writes a
+dequantized tensor of the same shape back into the parameter and the expert forward is
+unchanged — so the accuracy question can be answered. `--mode real` and `--mode kernel`
+raise rather than quantizing the attention and leaving 97% of the model alone. Each expert
+slice `[out, in]` is used exactly as a Linear weight with the reduction axis last, so the
+MLP rule already describes it, and grouping on that axis gives every expert its own scales.
+
+**The router stays bf16 deliberately.** It is one `[num_experts, hidden]` matrix whose
+output is argmaxed into a discrete choice of expert, so an error there does not perturb a
+value — it sends the token to a different expert. It is also far too small for quantizing
+it to save anything.
+
+Costing a MoE is different too, and the metrics know: disk pays for every expert, but a
+router picks `top_k` of `num_experts`, so only that fraction is read per token. The bf16
+baseline is routed the same way, since scaling top-k for the quantized run alone would
+credit quantization with the router's work.
 
 Phi-3's fused projections work because the layout rules already describe them. `qkv_proj`
 emits q, k and v from one Linear, but its output axis is still nothing but `head_dim`-sized

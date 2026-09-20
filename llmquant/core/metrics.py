@@ -93,6 +93,12 @@ def _scheme_of(recipe, name, module):
     return recipe.scheme_for(name)  # already applies `ignore` and the attn / mlp overrides
 
 
+def _num_scales_for(in_features: int, args) -> int:
+    """Scales one stacked expert slice needs along its reduction axis."""
+    groups = -(-in_features // args.group_size)
+    return groups
+
+
 def model_metrics(model: nn.Module, recipe: QuantizationModifier | None) -> dict:
     """All three cost metrics in one walk. Call on the unmodified bf16 model."""
     if recipe is not None:
@@ -123,8 +129,37 @@ def model_metrics(model: nn.Module, recipe: QuantizationModifier | None) -> dict
     weighted_bits += _linear_bpv(lm_head, lm_head_scheme) * lm_head.weight.numel()
     elements += lm_head.weight.numel()
 
+    # Stacked expert weights are quantized in place rather than swapped for a module, so
+    # the Linear walk above never sees them -- and on a Mixture-of-Experts they are most of
+    # the model. They also break the assumption behind `decode`: a dense model reads every
+    # weight for every token, but a router picks top_k of num_experts, so only that
+    # fraction of the expert weights is read. Disk still pays for all of them.
+    from llmquant.core.modifier import stacked_expert_parameters
+
+    expert_args = recipe.mlp_scheme.weights if (recipe and recipe.mlp_scheme) else None
+    # found by shape and name, not by recipe: the bf16 baseline routes the same way
+    expert_ids = {id(param) for _, param in stacked_expert_parameters(model)}
+    config = getattr(model, "config", None)
+    experts_total = getattr(config, "num_local_experts", None) if config else None
+    experts_live = getattr(config, "num_experts_per_tok", None) if config else None
+    read_fraction = (
+        experts_live / experts_total if experts_total and experts_live else 1.0
+    )
+
     for p in model.parameters():
         if id(p) in counted or (not tied and p is lm_head.weight) or p is embed.weight:
+            continue
+        if id(p) in expert_ids:
+            bits = expert_args.num_bits if expert_args else 16
+            nbytes = p.numel() * bits // 8
+            if expert_args is not None:
+                nbytes += _num_scales_for(p.shape[-1], expert_args) * p.shape[0] * SCALE_BYTES
+                weighted_bits += bits_per_element(bits, expert_args.group_size) * p.numel()
+            else:
+                weighted_bits += 16.0 * p.numel()
+            elements += p.numel()
+            disk += nbytes
+            decode += int(nbytes * read_fraction)
             continue
         nbytes = p.numel() * BF16_BYTES
         disk += nbytes

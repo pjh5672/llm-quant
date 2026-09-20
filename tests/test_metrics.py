@@ -1,6 +1,7 @@
 """Disk size, decode traffic and BPV disagree with each other; that is the point of them."""
 
 import pytest
+import torch
 import torch.nn as nn
 
 from llmquant.core.config import QuantConfig
@@ -143,3 +144,64 @@ def test_kv_cache_costs_nothing_on_disk_but_grows_decode_with_context():
     # at zero context the cache costs nothing; the gap opens as context grows
     assert decode_bytes_at_context(bf16, 0) == decode_bytes_at_context(int8, 0)
     assert decode_bytes_at_context(int8, 8192) < decode_bytes_at_context(bf16, 8192)
+
+
+# ---------------------------------------------------------------- Mixture-of-Experts
+
+class StackedExperts(nn.Module):
+    """transformers 5.x stores experts as stacked Parameters, not Linear modules."""
+
+    def __init__(self, experts, hidden, inter):
+        super().__init__()
+        self.gate_up_proj = nn.Parameter(torch.zeros(experts, 2 * inter, hidden))
+        self.down_proj = nn.Parameter(torch.zeros(experts, hidden, inter))
+
+
+def _moe_model(experts=8, live=2):
+    model = TinyLlama()
+    hidden = model.config.hidden_size
+    block = nn.Module()
+    block.experts = StackedExperts(experts, hidden, 4 * hidden)
+    model.model.layers[0].block_sparse_moe = block
+    model.config.num_local_experts = experts
+    model.config.num_experts_per_tok = live
+    return model
+
+
+def test_stacked_experts_are_costed_as_quantized():
+    """They are quantized in place rather than swapped, so the Linear walk never sees them
+    -- and on a real MoE they are most of the model."""
+    model = _moe_model()
+    bf16 = model_metrics(model, QuantConfig().to_modifier())
+    w8 = model_metrics(model, QuantConfig(attn_weight="int8", mlp_weight="int8").to_modifier())
+    assert w8["deployed_bytes"] < bf16["deployed_bytes"]
+    assert w8["bits_per_element"] < 16.0
+
+
+def test_only_the_live_experts_count_toward_decode():
+    """A router picks top_k of num_experts, so a dense read of every expert overstates
+    decode traffic by num_experts / top_k."""
+    model = _moe_model(experts=8, live=2)
+    recipe = QuantConfig().to_modifier()
+    routed = model_metrics(model, recipe)["decode_bytes_per_token"]
+
+    dense = _moe_model(experts=8, live=8)
+    dense_bytes = model_metrics(dense, QuantConfig().to_modifier())["decode_bytes_per_token"]
+    assert routed < dense_bytes
+
+    expert_bytes = sum(
+        p.numel() * 2 for n, p in model.named_parameters() if "experts" in n
+    )
+    # the saving is exactly the three quarters of the experts that are not read
+    assert dense_bytes - routed == pytest.approx(expert_bytes * 0.75, rel=0.01)
+
+
+def test_the_baseline_is_routed_too():
+    """Scaling top-k only on the quantized run would credit quantization with the router's
+    work: the bf16 model reads the same two experts per token."""
+    model = _moe_model()
+    bf16 = model_metrics(model, QuantConfig().to_modifier())["decode_bytes_per_token"]
+    w8 = model_metrics(
+        model, QuantConfig(attn_weight="int8", mlp_weight="int8").to_modifier()
+    )["decode_bytes_per_token"]
+    assert 1.0 < bf16 / w8 < 2.5, f"implausible decode ratio {bf16 / w8:.1f}x"

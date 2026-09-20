@@ -126,11 +126,26 @@ def pattern_coverage(model, recipe) -> dict:
     # Mixture-of-Experts model: transformers keeps Mixtral's experts as stacked
     # nn.Parameters, so they are invisible to a Linear walk while holding most of the
     # model. Counting only Linears reported 100% coverage on a model 97% untouched.
+    # Reachability, not the current choice of dtype: a stacked expert this project knows
+    # how to quantize is covered even when the config leaves it bf16, the same way a bf16
+    # Linear is "unmatched" rather than "outside". "outside" is for weights no recipe can
+    # reach at all.
+    from llmquant.core.modifier import stacked_expert_parameters
+
+    reachable_experts = {name for name, _ in stacked_expert_parameters(model)}
+    quantized_experts = {name for name, _ in (recipe.expert_parameters(model) if recipe else [])}
     outside = []
     outside_params = 0
     for name, param in model.named_parameters():
         if id(param) in seen or param.ndim < 2:
             continue  # norms and biases are 1-D and are not quantization targets
+        if name in quantized_experts:
+            matched += param.numel()  # quantized in place, not swapped for a module
+            continue
+        if name in reachable_experts:
+            unmatched += param.numel()  # left bf16 by the config, but reachable
+            missed.append(name)
+            continue
         outside_params += param.numel()
         outside.append((name, param.numel()))
     outside.sort(key=lambda kv: -kv[1])
