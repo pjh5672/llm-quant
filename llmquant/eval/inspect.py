@@ -102,9 +102,12 @@ def pattern_coverage(model, recipe) -> dict:
         if covered:
             matched += params
             leaf = name.rsplit(".", 1)[-1]
-            # one Linear producing q, k and v at once: the per-head output grouping assumes
-            # a projection whose output axis is heads of ONE tensor, so it does not apply
-            if ".self_attn." in name and leaf not in ("q_proj", "k_proj", "v_proj", "o_proj"):
+            # a fused qkv projection is handled -- its output axis is still head_dim-sized
+            # heads -- but only if head_dim actually divides it. Anything else in attention
+            # is a shape this project has not reasoned about.
+            if ".self_attn." in name and leaf not in (
+                "q_proj", "k_proj", "v_proj", "o_proj", "qkv_proj"
+            ):
                 fused_qkv.append(name)
         else:
             unmatched += params
@@ -189,9 +192,9 @@ def fact_warnings(facts: dict) -> list[str]:
         if coverage["unexpected_attn_modules"]:
             names = ", ".join(coverage["unexpected_attn_modules"][:3])
             notes.append(
-                f"attention Linears that are not q/k/v/o_proj: {names}. A fused qkv "
-                "projection is quantized, but the per-head output grouping assumes one "
-                "tensor per head axis, so its layout is not the one this project verified."
+                f"attention Linears that are not q/k/v/qkv/o_proj: {names}. These are "
+                "quantized, but the head rules in core/layout.py were written for those "
+                "names and have not been checked against this shape."
             )
     if facts.get("tie_word_embeddings"):
         vocab, hidden = facts.get("vocab_size"), facts.get("hidden_size")

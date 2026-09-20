@@ -141,3 +141,70 @@ def test_resolve_is_a_no_op_once_head_dim_is_known():
     recipe = QuantizationModifier(attn_scheme="W4A16", head_dim=8)
     recipe.resolve(TinyLlama())
     assert recipe.head_dim == 8
+
+
+# ---------------------------------------------------------------- fused qkv (Phi-3 style)
+
+def _phi3_like(head_dim=96, num_heads=32, num_kv=32, hidden=3072):
+    """One Linear emitting q, k and v together, as Phi-3 does."""
+    import torch.nn as nn
+
+    out = (num_heads + 2 * num_kv) * head_dim
+    return nn.Linear(hidden, out, bias=False), head_dim
+
+
+def test_a_fused_qkv_is_grouped_per_head_like_a_split_one():
+    """Its output axis is still head_dim-sized heads, so the q/k/v boundaries land on head
+    boundaries and no q head shares a scale with a k head."""
+    from llmquant.core.config import QuantConfig
+
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="int8").to_modifier()
+    recipe.head_dim = 96
+    fused = recipe.scheme_for("model.layers.0.self_attn.qkv_proj")
+    split = recipe.scheme_for("model.layers.0.self_attn.q_proj")
+    assert fused is not None
+    assert fused.weights.out_group == split.weights.out_group == 96
+
+
+def test_a_fused_qkv_gets_one_scale_per_head():
+    from llmquant.core.config import QuantConfig
+    from llmquant.core.layout import layout_for
+
+    linear, head_dim = _phi3_like()
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="int8").to_modifier()
+    recipe.head_dim = head_dim
+    args = recipe.scheme_for("model.layers.0.self_attn.qkv_proj").weights
+    layout = layout_for(linear.out_features, linear.in_features, args)
+
+    heads = linear.out_features // head_dim
+    assert layout.padded_out == heads * 128      # each head padded into its own group
+    assert layout.scale_rows == heads            # and carrying its own scale
+
+
+def test_a_fused_qkv_whose_heads_do_not_divide_is_refused():
+    """Better a clear error than a silently wrong split."""
+    from llmquant.core.layout import WeightLayout
+
+    with pytest.raises(ValueError, match="not a multiple of head_dim"):
+        WeightLayout(out_features=9217, in_features=3072, group_size=128, out_head_dim=96)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_a_fused_qkv_round_trips_through_quantization():
+    from llmquant.core.config import QuantConfig
+    from llmquant.s1_fake import FakeQuantLinear
+
+    torch.manual_seed(0)
+    linear, head_dim = _phi3_like(head_dim=96, num_heads=4, num_kv=2, hidden=256)
+    linear = linear.cuda().to(torch.bfloat16)
+    recipe = QuantConfig(attn_weight="int8", mlp_weight="int8").to_modifier()
+    recipe.head_dim = head_dim
+    scheme = recipe.scheme_for("model.layers.0.self_attn.qkv_proj")
+
+    module = FakeQuantLinear.from_linear(linear, scheme)
+    x = torch.randn(2, 256, device="cuda", dtype=torch.bfloat16)
+    out = module(x)
+    assert out.shape == (2, linear.out_features)
+    assert torch.isfinite(out).all()
+    # int8 over a per-head scale should stay close to the original
+    assert (out.float() - linear(x).float()).abs().max() < 1.0

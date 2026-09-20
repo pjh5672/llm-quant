@@ -170,11 +170,19 @@ Not every HuggingFace model. The recipe finds layers by name, and those names ar
 self_attn.{q,k,v,o}_proj      mlp.{gate,up,down}_proj      lm_head
 ```
 
-That covers Llama 2/3, Mistral, Qwen2/2.5 and Gemma. It does **not** cover architectures
-that name or shape things differently — GPT-2 (`attn.c_attn`, and `Conv1D` rather than
-`Linear`), Falcon and GPT-NeoX (`query_key_value`), OPT (`fc1`/`fc2` outside any `mlp`),
-or Mixtral's expert MLPs. A fused `qkv_proj`, as in Phi-3, is quantized but does not get
-the per-head output grouping, because that assumes one tensor per head axis.
+That covers Llama 2/3, Mistral, Qwen2/2.5, Gemma and Phi-3. It does **not** cover
+architectures that name or shape things differently — GPT-2 (`attn.c_attn`, and `Conv1D`
+rather than `Linear`), Falcon and GPT-NeoX (`query_key_value`), OPT (`fc1`/`fc2` outside any
+`mlp`), or Mixtral's expert MLPs.
+
+Phi-3's fused projections work because the layout rules already describe them. `qkv_proj`
+emits q, k and v from one Linear, but its output axis is still nothing but `head_dim`-sized
+heads — `(num_heads + 2 * num_kv_heads)` of them — so the q/k/v boundaries land exactly on
+head boundaries and splitting per head separates them for free. That makes the per-head
+rule more necessary there than on a split projection, not less: without it a q head and a k
+head, which have no reason to share a dynamic range, would share a scale. `gate_up_proj`
+needs nothing special, since the MLP rule only pads the tail. A fused projection whose
+output is *not* a multiple of `head_dim` is refused rather than split wrongly.
 
 An unmatched layer is left in bf16, which is safe but silent — the run finishes and reports
 a quantized config having quantized nothing. So stage 1 of `examples/study.py` checks and

@@ -12,7 +12,14 @@ MLP_PATTERN = r"re:.*\.mlp\..*_proj$"
 # concatenated attention output, so its K axis is heads x head_dim.
 O_PROJ_PATTERN = r"re:.*\.self_attn\.o_proj$"
 # q/k/v are the mirror image: their *output* axis is heads x head_dim.
-QKV_PATTERN = r"re:.*\.self_attn\.[qkv]_proj$"
+#
+# A fused projection belongs here too. Phi-3's qkv_proj emits q, k and v from one Linear,
+# and its output axis is still nothing but head_dim-sized heads -- (num_heads +
+# 2 * num_kv_heads) of them -- so the q/k/v boundaries fall exactly on head boundaries and
+# splitting per head separates them for free. That makes the per-head rule more necessary
+# here than on a split projection, not less: without it a q head and a k head, which have
+# no reason to share a dynamic range, would share a scale.
+QKV_PATTERN = r"re:.*\.self_attn\.(q|k|v|qkv)_proj$"
 
 
 def _resolve(scheme):
