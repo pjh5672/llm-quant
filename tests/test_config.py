@@ -43,7 +43,7 @@ def test_weight_only_leaves_activation_unquantized():
     assert scheme.weights.num_bits == 4 and scheme.input_activations is None
 
 
-@pytest.mark.parametrize("dtype,bits", [(BF16, None), ("int8", 8), ("int4", 4)])
+@pytest.mark.parametrize("dtype,bits", [(BF16, None), ("int8", 8)])
 def test_kv_cache_resolves_to_a_bit_width(dtype, bits):
     cfg = QuantConfig(attn_weight="int4", kv_cache=dtype)
     assert cfg.kv_cache_bits == bits
@@ -132,3 +132,16 @@ def test_sweep_grid_with_int4_activation_is_rejected(tmp_path):
     )
     with pytest.raises(ValueError, match=r"activations support only"):
         expand_sweep(build_config(["--cfg", str(path)], root_dir=tmp_path))
+
+
+def test_an_int4_kv_cache_is_refused():
+    """Measured, not assumed: int4 costs +23.23% accuracy alone and falls below random
+    guessing with int4 MLP weights, while perplexity reports +0.18% because it never reads
+    the cache back."""
+    with pytest.raises(ValueError, match=r"kv_cache='int4'"):
+        QuantConfig(kv_cache="int4")
+
+
+@pytest.mark.parametrize("dtype", ["int8", "bf16", None])
+def test_the_supported_kv_cache_dtypes_are_accepted(dtype):
+    assert QuantConfig(kv_cache=dtype).kv_cache_bits in (8, None)

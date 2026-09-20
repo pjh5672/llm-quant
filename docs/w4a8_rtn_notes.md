@@ -41,7 +41,9 @@ sweep이 끝났으므로 필수 작업은 없다. 남은 건 선택지다.
    `M>16`을 요구해 아예 못 쓴다. **이득은 int 연산이 아니라 int weight를 직접 읽는 대역폭**이다.
    A8을 되살리려면 int-int 커널을 만들어야 하는데, 그 경우 **정수 합은 순서 무관이라
    레퍼런스와 bit-exact 검증이 가능하다**는 장점은 있다.
-2-b. **kv_cache.** ✅ 확정: **bf16으로 둔다.** int8은 정확도로는 공짜(+1.28%)지만
+2-b. **kv_cache.** ✅ **int8 | bf16만 허용**(2026-09-20, `KV_CACHE_DTYPES`로 config 단 강제).
+   int4는 거부된다 — 단독 +23.23%, mlp int4와 만나면 랜덤 이하(0.0989 < 0.25)인데
+   PPL은 +0.18%로만 보고한다(캐시를 되읽지 않으므로). 기본값은 **bf16으로 둔다.** int8은 정확도로는 공짜(+1.28%)지만
    커널 실측에서 decode를 74.3 → 50.3 tok/s로 **32% 떨어뜨린다** (트래픽은 1.8%만 아낀다).
    "커널 실측" 절 참고. **int4는 금지** — 단독 +23.23%, mlp int4와 만나면 랜덤 이하 붕괴.
 3. **scale dtype.** ✅ **fp32 유지 확정.** 2바이트로 줄여도 14MB(모델의 0.9%)뿐인데,
@@ -333,6 +335,30 @@ tying과 head_dim 패딩은 **모델마다 다르다.** Llama-3.2-1B에서 이 �
 `reports/<project>.md`에 쓴다. `experiments/`가 gitignore라 거기 두면 커밋이 안 되고,
 **모델 간 비교가 이 문서의 목적**이라 git에 남아야 한다. `sweep.json`은 기존대로
 `experiments/<project>/`에 남고 `phase1_analyze.py`로 GPU 없이 재분석 가능하다.
+
+---
+
+## activation int8이 왜 안 빨라지는가 (2026-09-20 코드 확인)
+
+세 모드 전부 확인한 결과 **이 코드베이스에는 int8 x int8 GEMM이 없다.**
+
+| mode | activation int8이 실제로 하는 일 |
+|---|---|
+| `fake` | `fake_quantize(x)` 후 **bf16** `F.linear`. 양자화-역양자화만 추가 = 순수 오버헤드 |
+| `kernel` | `input_activations`를 **`extra_repr`에서만** 읽는다(`quant_linear.py:109`). 연산은 **완전한 no-op** |
+| `real` | 정수로 양자화하지만 **fp32로 곱한다**(TF32 off). 정확성 오라클이라 의도적으로 느림 |
+
+int-int 커널을 만들어도 답은 안 바뀐다:
+
+1. **int8 GEMM이 bf16 대비 1.03~1.04x뿐이다.** bf16이 이미 텐서코어에서 돈다.
+   게다가 `torch._int_mm`은 `M>16`을 요구해 **decode(M=1)에서는 호출조차 못 한다.**
+2. **decode는 메모리 바운드다.** M=1이면 GEMV라 weight 전체를 스트리밍하면서 연산은 거의
+   안 한다. activation은 `1 x K`로 수 KB, weight는 토큰당 1.6GB. **병목이 아닌 쪽을 줄여봐야
+   아무 일도 안 일어난다.** sweep의 `dBPV 0.00`과 decode 트래픽 무변화가 그 증거다.
+3. **prefill은 compute 바운드라 원리상 이득 가능**하지만 그러려면 int-int 커널이 필요하다.
+
+**A8은 int 연산으로 버는 게 아니라 int weight를 직접 읽는 대역폭으로 버는 것이고,
+그건 이미 weight-only 커널이 하고 있다.**
 
 ---
 

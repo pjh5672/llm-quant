@@ -39,6 +39,12 @@ WEIGHT_TARGETS = ("attn_weight", "mlp_weight", "head_weight")
 # the output formula and the packing format assume an int8 activation, and an int4 x int4
 # GEMM is a separate kernel path that neither CUTLASS nor QQQ gives us for free.
 ACTIVATION_DTYPES = ("int8", BF16)
+# The KV cache is int8 or bf16 only. int4 was measured and is not a trade worth offering:
+# on its own it costs +23.23% of generation accuracy, and combined with int4 MLP weights it
+# takes the model below random guessing (0.0989 against 0.25 for a four-way choice) while
+# perplexity reports the damage as +0.18%, because a perplexity pass never reads the cache
+# back. int8 costs +1.28% and halves cache traffic, so the useful range is int8 to bf16.
+KV_CACHE_DTYPES = ("int8", BF16)
 
 
 def normalize_dtype(dtype) -> str:
@@ -83,7 +89,11 @@ class QuantConfig:
                 f"activation={self.activation!r}: activations support only "
                 f"{list(ACTIVATION_DTYPES)}; see docs/w4a8_rtn_notes.md."
             )
-
+        if normalize_dtype(self.kv_cache) not in KV_CACHE_DTYPES:
+            raise ValueError(
+                f"kv_cache={self.kv_cache!r}: the KV cache supports only "
+                f"{list(KV_CACHE_DTYPES)}; see docs/w4a8_rtn_notes.md."
+            )
 
     def scheme(self, target: str) -> QuantizationScheme | None:
         """Scheme for one weight target, or None to leave it bf16.

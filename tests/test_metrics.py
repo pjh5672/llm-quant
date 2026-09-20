@@ -137,9 +137,9 @@ def test_kv_cache_costs_nothing_on_disk_but_grows_decode_with_context():
     from llmquant.core.metrics import decode_bytes_at_context
 
     bf16 = model_metrics(TinyLlama(), QuantConfig(attn_weight="int8", kv_cache="bf16").to_modifier())
-    int4 = model_metrics(TinyLlama(), QuantConfig(attn_weight="int8", kv_cache="int4").to_modifier())
-    assert bf16["deployed_bytes"] == int4["deployed_bytes"]  # the cache is not stored
-    assert int4["kv_bytes_per_token"] < bf16["kv_bytes_per_token"]
+    int8 = model_metrics(TinyLlama(), QuantConfig(attn_weight="int8", kv_cache="int8").to_modifier())
+    assert bf16["deployed_bytes"] == int8["deployed_bytes"]  # the cache is not stored
+    assert int8["kv_bytes_per_token"] < bf16["kv_bytes_per_token"]
     # at zero context the cache costs nothing; the gap opens as context grows
-    assert decode_bytes_at_context(bf16, 0) == decode_bytes_at_context(int4, 0)
-    assert decode_bytes_at_context(int4, 8192) < decode_bytes_at_context(bf16, 8192)
+    assert decode_bytes_at_context(bf16, 0) == decode_bytes_at_context(int8, 0)
+    assert decode_bytes_at_context(int8, 8192) < decode_bytes_at_context(bf16, 8192)

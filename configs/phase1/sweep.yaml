@@ -51,7 +51,9 @@ sweep:
   attn_weight: [int4, int8]
   mlp_weight: [int4, int8]
   activation: [bf16, int8]
-  kv_cache: [bf16, int8, int4]
+  # int4 is not offered: it costs +23.23% accuracy alone and drops below random guessing
+  # when combined with int4 MLP weights. QuantConfig rejects it.
+  kv_cache: [bf16, int8]
   # head_weight is held at bf16: three independent sweeps put its accuracy effect at ~0,
   # and its real trade-off (disk +252MB vs decode -262MB per token) is already known
   # analytically. Add it back here if that trade-off needs re-measuring.

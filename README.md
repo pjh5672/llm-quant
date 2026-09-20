@@ -53,8 +53,8 @@ quantization:
   attn_weight: int8     # self_attn.{q,k,v,o}_proj
   mlp_weight:  int8     # mlp.{gate,up,down}_proj
   head_weight: int8     # lm_head
-  activation:  bf16     # input of every quantized Linear; int4 is NOT supported here
-  kv_cache:    bf16     # applied at generation time, not by rewiring the model
+  activation:  bf16     # input of every quantized Linear; int8 | bf16 only
+  kv_cache:    bf16     # applied at generation time, not by rewiring; int8 | bf16 only
   group_size:  128
   mode: fake            # fake | real | kernel
 ```
@@ -73,7 +73,7 @@ A sweep expands a grid:
 sweep:
   attn_weight: [int4, int8]
   mlp_weight:  [int4, int8]
-  kv_cache:    [bf16, int8, int4]
+  kv_cache:    [bf16, int8]
 ```
 
 ## What the pipeline does
@@ -121,7 +121,7 @@ kv_cache:    bf16 -> int8     +1.28%    dBPV  0.00
 activation:  bf16 -> int8     +0.97%    dBPV  0.00
 ```
 
-### Four things that were not obvious
+### Five things that were not obvious
 
 **Perplexity is wrong in both directions.** A PPL pass never reads the KV cache back, so it
 scores an int4 cache at +0.18% while generation accuracy falls 18%. In the other direction
@@ -136,6 +136,17 @@ size. An earlier PPL-based reading of the same question said the opposite.
 token against a 0.034 GB cache, so quantizing the cache saves 1.8% of the traffic — and
 costs 32% of decode time, because it runs in PyTorch on every step while the weights are
 read by a kernel. This is what stage 4 exists to catch.
+
+**An int8 activation buys nothing here, and cannot.** No mode in this repo runs an
+int8xint8 matmul: `fake` quantize-dequantizes and then multiplies in bf16, `real` quantizes
+to integers and multiplies in fp32 for exactness, and `kernel` is weight-only -- it reads
+the activation scheme only to print a label. Building an int GEMM would not change the
+answer either: `torch._int_mm` measured 1.03-1.04x against bf16 on this GPU and requires
+M>16, so decode cannot call it at all. And decode would not benefit in any case, because at
+M=1 the matmul is a GEMV that streams the whole weight matrix to do very little arithmetic
+-- the activation is a few KB against 1.6 GB of weights per token. Shrinking the small
+operand does nothing when the large one is the bottleneck, which is why the activation axis
+moves BPV and decode traffic by exactly 0.00.
 
 **Quantizing the transformer weights does not speed up decode at this size.** Only ~45% of a
 decode step is weight bandwidth on a 1B model, so halving the weight bytes cannot pay for
