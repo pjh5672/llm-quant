@@ -1,0 +1,37 @@
+# A two-minute end-to-end check of examples/study.py: does every stage run and agree?
+# Not a measurement -- the task limit is far too small to rank anything. Use sweep.yaml
+# for a real study.
+defaults:
+  project: smoke
+  model: meta-llama/Llama-3.2-1B-Instruct
+  device: cuda
+  seq_len: 2048
+  seed: 0
+
+quantization:
+  quantize: true
+  quant_method: rtn
+  mode: fake
+  group_size: 128
+
+evaluation:
+  tasks: [arc_easy]
+  task_limit: 20
+  ppl: false
+  latency: true
+  latency_prompt_tokens: 128
+  latency_new_tokens: 16
+  generation: false
+
+selection:
+  context_tokens: 2048
+  acc_drop_limit_pct: 100.0    # everything passes; this config is about plumbing
+  decode_speed_weight: 4.0
+  prefill_speed_weight: 2.0
+  accuracy_weight: 1.0
+  bpv_weight: 0.5
+
+sweep:
+  attn_weight: [int8]
+  mlp_weight: [int8]
+  kv_cache: [bf16, int8]

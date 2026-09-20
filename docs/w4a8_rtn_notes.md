@@ -18,7 +18,7 @@
   q/k/v는 out축 head별, o_proj는 in축 head별, 나머지는 끝 패딩. "레이아웃 명세" 절 참고.
 - **정확도 기준은 생성 태스크**(ARC-Easy/Challenge/OpenBookQA), PPL은 보조. "선택 기준" 절.
 - **가중치 우선순위: decode 4.0 > prefill 2.0 > accuracy 1.0**, BPV 0.5.
-- 테스트 **254개** 통과. `origin/master`에 푸시 완료
+- 테스트 **269개** 통과. `origin/master`에 푸시 완료
   (https://github.com/pjh5672/llm-quant).
 
 ### 바로 다음에 할 일
@@ -269,6 +269,72 @@ scale만 반올림했을 때 상대오차 (int8 스텝 1/127 = 7.87e-03 과 비�
 
 **결론: fp32 유지.** 재검토 조건은 group_size가 훨씬 작아져서(scale 비중 상승) 절감이
 의미 있어지거나, 커널이 어차피 fp16 scale을 요구하게 되는 경우.
+
+---
+
+## 모델 바꿔가며 실험하는 법 (2026-09-20) — `examples/study.py`
+
+새 모델을 물리면 끝까지 알아서 도는 단일 커맨드.
+
+```powershell
+.\.venv\Scripts\python.exe examples\study.py --cfg configs\phase1\sweep.yaml
+.\.venv\Scripts\python.exe examples\study.py --cfg configs\phase1\sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
+.\.venv\Scripts\python.exe examples\study.py --cfg configs\phase1\smoke.yaml   # 2분 배관 점검
+```
+
+| 단계 | 하는 일 | 코드 |
+|---|---|---|
+| 1 inspect | 구조 사실 + 경고 | `eval/inspect.py` (신규) |
+| 2 sweep | fake 그리드 전체 | `eval/run.py` (재사용) |
+| 3 select | 한계선·랭킹·축효과·상호작용 | `eval/analysis.py` (재사용) |
+| 4 verify | **선정안을 kernel로 재측정 + 절제실험** | `eval/verify.py` (신규) |
+| 5 reconcile | 예측 vs 실측 대조와 귀속 | `eval/verify.py` (신규) |
+| 6 report | 터미널 + `reports/<project>.md` | `eval/markdown.py` (신규) |
+
+### 4-5단계가 이 도구의 존재 이유
+
+sweep은 fake라 속도를 못 잰다. 그래서 해석적 `decode_gb_at_context`로 순위를 매기는데,
+**그건 바이트 비율이라 커널 밖에서 도는 작업의 비용을 모른다.** 이번에 kv int8이
+예측 1.47x / 실측 0.65x로 어긋난 게 정확히 그 구멍이었다.
+
+그래서 stage 4는 **선정된 조합을 `mode=kernel`로 다시 재고**, `OUT_OF_KERNEL_AXES`
+(`kv_cache`, `activation`) 중 bf16이 아닌 축마다 **그 축만 bf16으로 되돌린 절제 런**을
+추가로 돌린다. 두 런의 차이가 그 축의 진짜 비용이다.
+검증 결과 예시 (smoke 설정, 자동 출력):
+
+```
+decode: projected 1.47x, measured 0.60x -- the projection does NOT hold up (47.1 vs 78.0 tok/s).
+the selected combination decodes SLOWER than bf16.
+kv_cache=int8 costs 32% of decode throughput (69.6 tok/s without it).
+  It runs outside the weight kernel, so the analytic traffic estimate cannot see it.
+TTFT is 2.57x the baseline: prefill dequantizes weights every pass.
+peak VRAM is 0.70x the baseline.
+```
+
+손으로 찾아낸 32%를 도구가 그대로 재현한다. **새 모델에서 같은 함정에 다시 안 빠진다.**
+
+### 1단계가 잡아주는 것
+
+결과 표에 안 나오지만 해석을 통째로 바꾸는 구조 사실들:
+
+```
+! lm_head is TIED to the embedding, so head_weight=int8 makes the file BIGGER
+  (about +258 MB ...), while decode traffic falls. Judge head_weight on decode, not disk.
+! head_dim 64 is narrower than group_size 128: ... q/k/v and o_proj store 2x the slots.
+! attn: stores 2.00x the weights it uses (335.5M slots for 167.8M weights)
+! mlp holds 54% of the parameters (attn 11%, embedding 18%, lm_head 18%, mlp 54%)
+```
+
+tying과 head_dim 패딩은 **모델마다 다르다.** Llama-3.2-1B에서 이 둘을 모르고 head_weight
+디스크 수치를 보다가 한참 헤맸다. 이제 sweep 시작 전에 먼저 찍힌다.
+패딩 기하는 config의 dtype과 무관하게(패딩은 group_size·head_dim만의 함수) 전부 int8로
+프로브해서 잰다 — sweep의 base config는 보통 dtype이 bf16이라 그냥 물으면 "패딩 없음"이 나온다.
+
+### 리포트
+
+`reports/<project>.md`에 쓴다. `experiments/`가 gitignore라 거기 두면 커밋이 안 되고,
+**모델 간 비교가 이 문서의 목적**이라 git에 남아야 한다. `sweep.json`은 기존대로
+`experiments/<project>/`에 남고 `phase1_analyze.py`로 GPU 없이 재분석 가능하다.
 
 ---
 
