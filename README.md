@@ -293,6 +293,36 @@ Multi-turn: the conversation and its KV cache are carried across turns rather th
 re-encoded, and the oldest turns are dropped when the context fills. `/reset` clears both,
 `/exit` leaves, `--ask` does one question and returns.
 
+`--compare` answers with the bf16 model as well and reports where the two part:
+
+```bash
+python examples/chat.py --load-packed model.bin --compare
+python examples/chat.py --load-packed big.bin --compare --reference-device cpu
+```
+
+```
+you> Name three primary colours.
+  bf16      > The three primary colours are: 1. Red 2. Blue 3. Yellow
+  quantized > Here are three primary colors: 1. Red 2. Blue 3. Yellow ...
+  38% of tokens agree, first difference at token 0
+
+you> Why is the sky blue?
+  bf16      > ... a phenomenon called Rayleigh scattering, n
+  quantized > ... a phenomenon called scattering. When
+  16% of tokens agree, first difference at token 4
+```
+
+That is W4 on Llama-3.2-1B; W8 answers all three identically. Both decode greedily, so
+every difference is quantization error and nothing else, and the position of the first
+different token matters as much as the rate: 90% agreement starting at token 2 is a
+different thing from 90% starting at token 40. `/summary` gives the totals so far.
+
+Each model keeps its own reply in its own history by default, so divergence compounds the
+way it would for someone actually using it. `--follow-reference` feeds both the bf16 reply
+instead, which judges each turn on its own. `--reference-device cpu` exists because the two
+models have to fit at once: Llama-3.2-1B is 2.4 GB plus 1.9 GB and fits easily, OLMoE-1B-7B
+is 12.9 GB in bf16 and does not fit beside anything.
+
 ### `bench_gemm.py` — the GEMM primitives on their own
 
 ```bash

@@ -206,3 +206,19 @@ def test_without_a_limit_nothing_is_dropped():
     for i in range(6):
         session.ask(f"turn {i}")
     assert len(session.history) == 12
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_load_for_chat_accepts_a_config():
+    """It passed mode= to RunConfig.to_modifier(), which takes no arguments -- so chatting
+    from a config rather than a packed file raised every time."""
+    from pathlib import Path
+
+    from llmquant.core.parser import build_config
+    from llmquant.runtime import load_for_chat
+
+    config = build_config(
+        ["--cfg", "configs/recommended.yaml", "--mode", "fake"], root_dir=Path(".")
+    )
+    model, tokenizer, _ = load_for_chat(config=config)
+    assert model is not None and tokenizer is not None

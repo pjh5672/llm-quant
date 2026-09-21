@@ -145,7 +145,7 @@ def load_for_chat(packed_path=None, config=None, device="cuda"):
         from llmquant.core.oneshot import oneshot
 
         model, tokenizer = load_pretrained(ModelArgs(model_id=config.model, device=device))
-        recipe = config.to_modifier(mode=config.mode)
+        recipe = config.to_modifier()   # RunConfig already carries its own mode
         if recipe is not None:
             oneshot(model, recipe)
         kv_bits = config.quant.kv_cache_bits if config.quantize else None
