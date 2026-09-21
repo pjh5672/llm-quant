@@ -186,7 +186,7 @@ def measure_latency(
 
     graphed = False
     if use_cuda_graph:
-        from llmquant.s4_kernel import can_graph, graphed_generate
+        from llmquant.runtime import can_graph, graphed_generate
 
         graphed = can_graph(model, cache_factory)
 

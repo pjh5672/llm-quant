@@ -1,8 +1,8 @@
 """Chat with a quantized model.
 
-    python examples/phase5_chat.py --load-packed experiments/w4/model.bin
-    python examples/phase5_chat.py --cfg configs/w8a16.yaml --mode kernel
-    python examples/phase5_chat.py --load-packed model.bin --ask "What is a prime number?"
+    python examples/chat.py --load-packed experiments/w4/model.bin
+    python examples/chat.py --cfg configs/w8a16.yaml --mode kernel
+    python examples/chat.py --load-packed model.bin --ask "What is a prime number?"
 
 With --load-packed the bf16 model is never built: the architecture comes from the model id
 recorded in the file and the weights straight from the packed integers. The KV cache dtype
@@ -16,7 +16,7 @@ from pathlib import Path
 import torch
 
 from llmquant.core.parser import build_config
-from llmquant.s5_chat import ChatSession, load_for_chat
+from llmquant.runtime import ChatSession, load_for_chat
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -1,6 +1,6 @@
 """Shared by every stage. Nothing here may import a stage at module level.
 
-The one exception is the mode -> module class lookup, which llmquant.modes owns and
+The one exception is the mode -> module class lookup, which llmquant.quantizers.dispatch owns and
 core.modifier imports lazily inside apply(); see the comment there.
 """
 

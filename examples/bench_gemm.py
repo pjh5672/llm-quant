@@ -1,7 +1,7 @@
 """How much can an int8 activation actually buy, at this model's GEMM shapes?
 
-    python examples/phase4_bench_gemm.py
-    python examples/phase4_bench_gemm.py --m 1 64 2048
+    python examples/bench_gemm.py
+    python examples/bench_gemm.py --m 1 64 2048
 
 Times the GEMM primitives directly, so the numbers are free of fake-quant overhead.
 See llmquant/benchmark.py for how to read the three columns.

@@ -20,7 +20,7 @@ DTYPES = [torch.bfloat16, torch.float16, torch.float32]
 
 @pytest.fixture(scope="module")
 def cuda_fake_quantize():
-    from llmquant.s4_kernel import fake_quantize_cuda
+    from llmquant.cuda import fake_quantize_cuda
 
     return fake_quantize_cuda
 

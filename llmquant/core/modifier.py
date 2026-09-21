@@ -169,9 +169,9 @@ class QuantizationModifier:
     def apply(self, model: nn.Module) -> nn.Module:
         # imported here, not at module level, so core never depends on a stage until a
         # recipe is actually applied; see llmquant/__init__.py
-        from llmquant.modes import quant_linear_for
+        from llmquant.quantizers import quant_linear_for
 
-        from llmquant.modes import quant_experts_for
+        from llmquant.quantizers import quant_experts_for
 
         quant_cls = quant_linear_for(self.mode)
         expert_cls = quant_experts_for(self.mode)

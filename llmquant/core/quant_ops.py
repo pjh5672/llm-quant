@@ -24,7 +24,7 @@ def dequantize(q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
 
 
 def fake_quantize(x: torch.Tensor, args: QuantizationArgs) -> torch.Tensor:
-    """Reference quant-dequant. The CUDA kernel in llmquant.s4_kernel must match bit-exactly."""
+    """Reference quant-dequant. The CUDA kernel in llmquant.cuda must match bit-exactly."""
     scale = compute_scale(x, args)
     if args.strategy != "group":
         return dequantize(quantize(x, scale, args), scale).to(x.dtype)

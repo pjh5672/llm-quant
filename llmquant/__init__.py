@@ -1,10 +1,12 @@
-"""Symmetric RTN quantization, organized as core / stages / eval.
+"""Symmetric RTN quantization, grouped by what the code does.
 
-  core    everything every stage shares: config, schemes, scale computation, the
-          quant-dequant math, the modifier that rewires a model, cost metrics
-  stages  one folder per phase of NOTES.md, matching the `mode` config
-          field: s1_fake -> s2_real -> s3_pack -> s4_kernel -> s5_chat
-  eval    measuring a quantized model: PPL, LAMBADA, generation, GEMM speed, analysis
+  core        what everything shares: config, schemes, scale computation, the
+              quant-dequant math, the modifier that rewires a model, cost metrics
+  quantizers  the three implementations -- fake, real, kernel -- and the `mode` lookup
+  cuda        building and calling the CUDA kernels
+  packing     the single-file format for a quantized model
+  runtime     running one: graphed decode, chat, comparison against bf16
+  eval        measuring a quantized model: PPL, generation, GEMM speed, analysis
 """
 
 from llmquant.core.config import DatasetArgs, ModelArgs, QuantConfig

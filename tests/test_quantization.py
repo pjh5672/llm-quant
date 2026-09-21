@@ -5,7 +5,7 @@ import torch.nn as nn
 from llmquant import QuantizationModifier
 from llmquant.core import QuantizationArgs, preset_name_to_scheme
 from llmquant.core.scheme import GROUP_SIZE
-from llmquant.s1_fake import FakeQuantLinear
+from llmquant.quantizers import FakeQuantLinear
 from llmquant.core.observers import compute_scale, group_view
 from llmquant.core.quant_ops import fake_quantize, quantize
 

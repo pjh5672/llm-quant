@@ -71,10 +71,10 @@ sweep이 끝났으므로 필수 작업은 없다. 남은 건 선택지다.
 ```powershell
 cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
 .\.venv\Scripts\python.exe -m pytest tests -q                                       # 269개
-.\.venv\Scripts\python.exe examples\auto_llm.py --cfg configs\w8a16.yaml     # 단일 실행
-.\.venv\Scripts\python.exe examples\study.py --cfg configs\sweep.yaml       # 전체 ~1.5시간
-.\.venv\Scripts\python.exe examples\phase4_bench_gemm.py                            # GEMM 속도
-.\.venv\Scripts\python.exe examples\phase1_analyze.py experiments\phase1-sweep\sweep.json --bpv-weight 5
+.\.venv\Scripts\python.exe examples\run.py --cfg configs\w8a16.yaml     # 단일 실행
+.\.venv\Scripts\python.exe examples\sweep.py --cfg configs\sweep.yaml       # 전체 ~1.5시간
+.\.venv\Scripts\python.exe examplesench_gemm.py                            # GEMM 속도
+.\.venv\Scripts\python.exe examplesnalyze.py experiments\phase1-sweep\sweep.json --bpv-weight 5
 ```
 - `mode`: `fake`(정확도 측정) | `real`(오라클) | `kernel`(배포). `pack: true`는 `mode=kernel` 필요.
 - 패키지 재설치: `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"` (ninja 포함)
@@ -87,7 +87,7 @@ cd C:\Users\Park Jiho\Desktop\Project\DEV\llm-quant
 ## Phase 1 최종 sweep (25/25 완주, 2026-09-20)
 
 `configs/sweep.yaml`, task_limit 300, 결과 `experiments/phase1-sweep/sweep.json`.
-재분석은 GPU 없이: `python examples/phase1_analyze.py experiments/phase1-sweep/sweep.json`
+재분석은 GPU 없이: `python examples/analyze.py experiments/phase1-sweep/sweep.json`
 
 ### 5% 한계선을 넘은 것은 25개 중 3개뿐이고 전부 int8/int8
 
@@ -274,14 +274,14 @@ scale만 반올림했을 때 상대오차 (int8 스텝 1/127 = 7.87e-03 과 비�
 
 ---
 
-## 모델 바꿔가며 실험하는 법 (2026-09-20) — `examples/study.py`
+## 모델 바꿔가며 실험하는 법 (2026-09-20) — `examples/sweep.py`
 
 새 모델을 물리면 끝까지 알아서 도는 단일 커맨드.
 
 ```powershell
-.\.venv\Scripts\python.exe examples\study.py --cfg configs\sweep.yaml
-.\.venv\Scripts\python.exe examples\study.py --cfg configs\sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
-.\.venv\Scripts\python.exe examples\study.py --cfg configs\smoke.yaml   # 2분 배관 점검
+.\.venv\Scripts\python.exe examples\sweep.py --cfg configs\sweep.yaml
+.\.venv\Scripts\python.exe examples\sweep.py --cfg configs\sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
+.\.venv\Scripts\python.exe examples\sweep.py --cfg configs\smoke.yaml   # 2분 배관 점검
 ```
 
 | 단계 | 하는 일 | 코드 |
@@ -336,7 +336,7 @@ tying과 head_dim 패딩은 **모델마다 다르다.** Llama-3.2-1B에서 이 �
 
 `reports/<project>.md`에 쓴다. `experiments/`가 gitignore라 거기 두면 커밋이 안 되고,
 **모델 간 비교가 이 문서의 목적**이라 git에 남아야 한다. `sweep.json`은 기존대로
-`experiments/<project>/`에 남고 `phase1_analyze.py`로 GPU 없이 재분석 가능하다.
+`experiments/<project>/`에 남고 `analyze.py`로 GPU 없이 재분석 가능하다.
 
 ---
 
@@ -557,7 +557,7 @@ gaia-compressor에서 **구조와 개념만** 가져오고 구현은 이 프로�
 - YAML(`defaults/quantization/evaluation/sweep`) + CLI override. 단, **CLI가 YAML을 이김**
   (gaia는 반대로 YAML이 CLI를 덮어씀 — 이건 의도적으로 바꿈).
 - 타깃별 data type 설정, `experiments/<project>/`에 config 복사 + 결과 저장.
-- `auto_llm.py` 선형 파이프라인 형태.
+- `run.py` 선형 파이프라인 형태.
 
 ### 안 가져온 것과 이유
 - **gaia의 packing 포맷** — GAIA NPU 전용(`GAIA_DIM_SIZE` 재배열, 1024 chunk 안 bit-serialize,
@@ -628,7 +628,7 @@ sweep:                  # 선택. 있으면 교차곱으로 확장
 전에는 "PPL로는 효과가 0이라" 미뤘었다. **정확도 지표를 생성 태스크로 바꾸면서 측정이 가능해졌다** —
 `evaluate_ppl`은 청크마다 forward 한 번이라 캐시를 되읽지 않지만, 생성 태스크는 디코드 루프를 돈다.
 
-**구현**: `s1_fake/fake_quant_cache.py::FakeQuantCache` — `DynamicCache`를 상속해
+**구현**: `quantizers/fake.py::FakeQuantCache` — `DynamicCache`를 상속해
 K/V를 쓰는 시점에 fake quant한다. `generate(past_key_values=...)`로 주입.
 
 - **그룹은 128, 64짜리 head는 패딩해서 채운다.** 위 패딩 정책과 같은 규칙이고, 결과는
@@ -667,11 +667,11 @@ llm-quant/
 pyproject.toml, .gitignore, README.md
 NOTES.md                        # 이 파일
 configs/                        # recommended, sweep, smoke
-examples/                       # study.py(전체), auto_llm.py(단일), phase1_analyze.py 등
+examples/                       # run / sweep / analyze / chat / bench_gemm
 prototypes/                     # 시도했다 기각한 것, 숫자와 함께 보존
 tests/
 experiments/<project>/          # git 제외, sweep.json 만 추적
-reports/<project>.md            # study.py 가 쓰는 모델별 리포트
+reports/<project>.md            # sweep.py 가 쓰는 모델별 리포트
 
 llmquant/
   __init__.py               # QuantizationModifier, QuantConfig, oneshot, evaluate_ppl
@@ -691,6 +691,12 @@ llmquant/
     quant_ops.py            # quantize, dequantize, fake_quantize ← 레퍼런스
     scheme.py               # QuantizationArgs, QuantizationScheme, PRESET_SCHEMES
     selection.py            # SelectionConfig — 정확도 한계선 + 가중치
+  cuda/
+    build.py                # MSVC env + TMP 8.3 + ninja, load_extension()
+    csrc/fake_quant.cpp
+    csrc/fake_quant.cu
+    csrc/wq_gemv.cu
+    ops.py                  # fake_quantize_cuda
   eval/
     analysis.py             # 축별 효과, 상호작용, pareto, 선정
     benchmark.py            # GEMM 벤치 (bf16 vs int8)
@@ -700,26 +706,16 @@ llmquant/
     report.py               # 터미널 표
     run.py                  # run_one — config 하나를 측정 한 행으로
     verify.py               # stage 4-5 — kernel 실측 + 절제실험 + 예측 대조
-  modes.py                  # quant_linear_for(mode) — core가 지연 import
-  s1_fake/
-    fake_quant_cache.py     # FakeQuantCache — KV 캐시 양자화
-    fake_quant_linear.py    # mode="fake" — 정확도 측정용
-  s2_real/
-    real_quant_linear.py    # mode="real" — 정확성 오라클
-  s3_pack/
+  packing/
     format.py               # [magic][len][JSON][64B 정렬 텐서]
-    model_io.py             # save_packed_model / load_packed_model
+    model_io.py             # save/load_packed_model, packed_dtypes
     packing.py              # int4 니블 패킹
-  s4_kernel/
-    build.py                # MSVC env + TMP 8.3 + ninja, load_extension()
-    csrc/fake_quant.cpp
-    csrc/fake_quant.cu
-    csrc/wq_gemv.cu
+  quantizers/
+    dispatch.py             # mode -> 구현 클래스, core가 지연 import
+  runtime/
+    chat.py                 # ChatSession — 캐시를 턴 간 유지, 컨텍스트 한계
+    compare.py              # bf16 과 나란히 생성해 갈라지는 지점 보고
     graph_decode.py         # CUDA graph decode — 1.70x, bit-exact
-    ops.py                  # fake_quantize_cuda
-    quant_linear.py         # KernelQuantLinear — M으로 커널/cuBLAS 디스패치
-  s5_chat/
-    session.py              # ChatSession — 캐시를 턴 간 유지
 ```
 
 **의존 방향은 `core → stages`가 한 군데뿐이다**: `modifier.apply()`가 `mode`에 맞는 Linear
@@ -728,9 +724,9 @@ core가 stage에 묶여버리므로 함수 안에서 지연 import한다.
 
 사용 예시:
 ```bash
-python examples/auto_llm.py --cfg configs/w4a8.yaml
-python examples/auto_llm.py --cfg configs/w4a8.yaml --mlp-weight int8   # CLI가 이김
-python examples/study.py --cfg configs/sweep.yaml
+python examples/run.py --cfg configs/w4a8.yaml
+python examples/run.py --cfg configs/w4a8.yaml --mlp-weight int8   # CLI가 이김
+python examples/sweep.py --cfg configs/sweep.yaml
 ```
 ```python
 from llmquant import QuantConfig, oneshot
@@ -835,7 +831,7 @@ sweep 결과를 받아 **bit 조합 결정에 필요한 비교**를 자동으로
 저장된 `sweep.json`만 있으면 GPU도 모델도 없이 다시 돌릴 수 있다:
 
 ```bash
-python examples/phase1_analyze.py experiments/phase1-sweep/sweep.json --limit-ratio 1.05
+python examples/analyze.py experiments/phase1-sweep/sweep.json --limit-ratio 1.05
 ```
 
 리포트 구성:
@@ -865,7 +861,7 @@ baseline은 그리드 밖에 있어서, 모든 런이 attn·mlp를 둘 다 양�
 재면 fake quant 오버헤드에 오염되지 않은 숫자가 나오고, Phase 4를 기다릴 필요도 없다.
 
 ```bash
-python examples/phase4_bench_gemm.py --m 1 64 512 2048
+python examples/bench_gemm.py --m 1 64 512 2048
 ```
 
 ### 측정 결과 (RTX 5060 Ti, sm_120, torch 2.11+cu128, TF32 off)
@@ -950,7 +946,7 @@ selection:
 (전부 bf16 대비 %라 가중치가 서로 비교 가능하다).
 
 - 하드 제약을 통과한 것 중 점수 최대를 고른다.
-- 가중치를 바꿔가며 재분석: `phase1_analyze.py <sweep.json> --bpv-weight 5 --no-limit`
+- 가중치를 바꿔가며 재분석: `analyze.py <sweep.json> --bpv-weight 5 --no-limit`
 - ⚠️ **없는 지표를 0으로 치지 않는다.** 정확도는 baseline에서 직접 유도하고, 나머지는
   `score_missing`에 기록한다. (0으로 치면 가장 공격적인 조합이 항상 이긴다 — 테스트가 잡은 버그)
 
@@ -992,9 +988,9 @@ PPL은 teacher-forced라 **생성 경로를 한 번도 안 건드린다.** 디�
 전체 그리드는 PPL(런당 ~1분)로 거르고, **Pareto front + 기준 통과 조합에만** 생성 평가를
 돌린다. 17조합 전부에 돌리면 1시간을 넘긴다.
 
-stage 2는 `study.py`가 sweep과 같은 실행 안에서 돌린다. 예전에는 끝난 sweep에 stage 2만
+stage 2는 `sweep.py`가 sweep과 같은 실행 안에서 돌린다. 예전에는 끝난 sweep에 stage 2만
 얹는 `phase1_generation.py`가 있었지만, `config_for()`가 **kv_cache를 복원하지 않아**
-잘못된 캐시 dtype으로 재평가하는 버그가 있었고 study.py가 쓰는 sweep.json의 새 필드
+잘못된 캐시 dtype으로 재평가하는 버그가 있었고 sweep.py가 쓰는 sweep.json의 새 필드
 (`model_facts`, `verification`)를 덮어썼다. 필요해지면 현재 코드 위에 다시 만드는 게 맞다.
 
 ### 스모크 결과 — ⚠️ PPL이 손상을 과소평가한다
@@ -1081,9 +1077,9 @@ weight 오차가 커진다. 실측:
 
 `qkv_out_scale_per_head: false`로 끄면 레이아웃 정렬은 유지하면서 이 정확도 비용만 없앨 수 있다.
 
-## Phase 2 real quant (2026-09-19 완료) — `s2_real/`
+## Phase 2 real quant (2026-09-19 완료) — `quantizers.real/`
 
-**qdq가 아니다.** s1_fake는 dequant한 bf16 weight를 들고 평범한 bf16 matmul을 돌려서 정확도 비용만
+**qdq가 아니다.** quantizers.fake는 dequant한 bf16 weight를 들고 평범한 bf16 matmul을 돌려서 정확도 비용만
 잰다. 여기서는 weight를 **정수로 들고 정수로 곱한다** — Phase 4 커널이 재현해야 할 산술이다.
 
     A16  group마다 weight를 dequant해서 fp32로 누적
@@ -1119,7 +1115,7 @@ real은 fake보다 **3.5배 느리다**(PPL 76s → 268s). group마다 matmul을
 **이게 바로 Phase 4 커널이 하나로 fuse해야 하는 이유다.** 레퍼런스의 목적은 속도가 아니라
 커널을 검증할 오라클을 만드는 것이다.
 
-## Phase 4 커널 (2026-09-19) — `s4_kernel/`
+## Phase 4 커널 (2026-09-19) — `cuda/`
 
 ### 무엇을 만들었나
 `csrc/wq_gemv.cu` — **weight-only 양자화 matmul.** int8 weight를 메모리에서 그대로 읽어
@@ -1178,7 +1174,7 @@ weight를 절반으로 줄여도 **상한이 1.23배**이고 실측 1.11배는 �
   group마다 블록 전체 리덕션을 돈 것도 병목이었다. warp당 group 1개 + int32로 4개씩 읽기 +
   마지막에 리덕션 1회로 바꿔 0.052 → 0.013ms가 됐다.
 
-## Phase 3 packing (2026-09-19 완료) — `s3_pack/`
+## Phase 3 packing (2026-09-19 완료) — `packing/`
 
 ### 통과 조건 ✅
 | | 결과 |
@@ -1230,16 +1226,16 @@ defaults:
 `pack: true`는 `experiments/<project>/model.bin`에 저장한다.
 `pack`에 `mode != kernel`을 주면 **아무것도 못 읽는 파일이 나오므로 config 단계에서 거부**한다.
 
-## Phase 5 채팅 (2026-09-20 완료) — `s5_chat/`
+## Phase 5 채팅 (2026-09-20 완료) — `runtime/`
 
 **전체 스택이 배포 형태로 도는 유일한 지점이다.** packed 파일을 넣으면 대화가 나오고,
 bf16 모델은 한 번도 만들어지지 않는다. weight는 커널이 정수로 읽고, config가 지시하면 KV 캐시도
 양자화되며, 캐시는 턴 사이에 유지된다.
 
 ```bash
-python examples/phase5_chat.py --load-packed experiments/w4/model.bin
-python examples/phase5_chat.py --cfg configs/w8a16.yaml --mode kernel
-python examples/phase5_chat.py --load-packed model.bin --ask "질문 하나만"
+python examples/chat.py --load-packed experiments/w4/model.bin
+python examples/chat.py --cfg configs/w8a16.yaml --mode kernel
+python examples/chat.py --load-packed model.bin --ask "질문 하나만"
 ```
 대화 중 `/reset`으로 초기화, `/exit`로 종료.
 
@@ -1329,4 +1325,4 @@ tie_word_embeddings=true라서 int8로 해도 크기 이득이 없음(+약 245MB
 - int4 pack/unpack round-trip 완전 일치
 - naive W4A8 커널 시뮬레이션 vs fp32 행렬곱: 평균 상대오차 ~10.2% (합성 랜덤 데이터 기준)
 - 검증 스크립트는 파일로 저장된 적 없음. C++로 옮긴 `csrc/w4a8_rtn_naive.cu`도 2026-09-20에 삭제됨
-  (현재 `s4_kernel/`과 무관한 초기 설계의 잔재였다).
+  (현재 `cuda/`과 무관한 초기 설계의 잔재였다).

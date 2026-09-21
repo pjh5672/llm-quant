@@ -130,10 +130,10 @@ def load_for_chat(packed_path=None, config=None, device="cuda"):
     """
     from transformers import AutoTokenizer
 
-    from llmquant.s1_fake import make_cache_factory
+    from llmquant.quantizers import make_cache_factory
 
     if packed_path is not None:
-        from llmquant.s3_pack import load_packed_model, read_header
+        from llmquant.packing import load_packed_model, read_header
 
         meta = read_header(packed_path)["meta"]
         model = load_packed_model(packed_path, device=device)

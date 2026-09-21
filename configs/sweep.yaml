@@ -1,5 +1,5 @@
 # Phase 1: compare bit combinations. Every run goes through the same pipeline as
-# examples/auto_llm.py -- the sweep only expands this one config into N of them.
+# examples/run.py -- the sweep only expands this one config into N of them.
 defaults:
   project: phase1-sweep
   model: meta-llama/Llama-3.2-1B-Instruct

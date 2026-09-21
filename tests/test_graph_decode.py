@@ -12,7 +12,7 @@ import torch
 from llmquant.core.config import QuantConfig
 from llmquant.core.parser import RunConfig
 from llmquant.eval.verify import verification_plan
-from llmquant.s4_kernel import can_graph
+from llmquant.runtime import can_graph
 
 
 class CpuModel:
@@ -58,7 +58,7 @@ def test_graphed_generation_matches_eager_token_for_token():
     from llmquant.core.config import ModelArgs
     from llmquant.core.model import load_pretrained
     from llmquant.core.oneshot import oneshot
-    from llmquant.s4_kernel import graphed_generate
+    from llmquant.runtime import graphed_generate
 
     torch.manual_seed(0)
     model, tok = load_pretrained(ModelArgs())
@@ -82,7 +82,7 @@ def test_the_cache_is_sized_for_the_calls_not_just_the_tokens():
     warmup and capture forwards consume slots. Sizing for tokens alone overran the cache."""
     from llmquant.core.config import ModelArgs
     from llmquant.core.model import load_pretrained
-    from llmquant.s4_kernel import WARMUP_CALLS, GraphedDecoder
+    from llmquant.runtime import GraphedDecoder, WARMUP_CALLS
 
     model, _ = load_pretrained(ModelArgs())
     d = GraphedDecoder(model, prompt_tokens=8, new_tokens=4)
@@ -99,7 +99,7 @@ def test_replayed_logits_are_bit_identical_to_eager():
     from llmquant.core.config import ModelArgs
     from llmquant.core.model import load_pretrained
     from llmquant.core.oneshot import oneshot
-    from llmquant.s4_kernel import GraphedDecoder
+    from llmquant.runtime import GraphedDecoder
 
     torch.manual_seed(0)
     model, tok = load_pretrained(ModelArgs())

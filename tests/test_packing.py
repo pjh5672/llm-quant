@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 from llmquant.core.scheme import GROUP_SIZE, preset_name_to_scheme
-from llmquant.s3_pack import (
+from llmquant.packing import (
     describe_packed,
     pack_int4,
     pack_weight,
@@ -23,9 +23,9 @@ from llmquant.s3_pack import (
     unpack_weight,
     write_packed,
 )
-from llmquant.s3_pack.format import ALIGNMENT, MAGIC
-from llmquant.s3_pack.model_io import save_packed_model
-from llmquant.s4_kernel import KernelQuantLinear
+from llmquant.packing.format import ALIGNMENT, MAGIC
+from llmquant.packing.model_io import save_packed_model
+from llmquant.quantizers import KernelQuantLinear
 
 
 def test_the_documented_nibble_example():
@@ -155,7 +155,7 @@ def test_describe_reads_only_the_header(tmp_path):
 def test_a_packed_file_reports_the_dtypes_it_actually_holds(tmp_path):
     """A run started with --load-packed has no config to describe itself with, so before
     this it reported bf16 on every axis -- a quantized model described as unquantized."""
-    from llmquant.s3_pack import packed_dtypes
+    from llmquant.packing import packed_dtypes
 
     torch.manual_seed(0)
     model = nn.Module()
@@ -171,7 +171,7 @@ def test_a_packed_file_reports_the_dtypes_it_actually_holds(tmp_path):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 def test_mixed_widths_in_one_group_are_reported_as_mixed(tmp_path):
-    from llmquant.s3_pack import packed_dtypes
+    from llmquant.packing import packed_dtypes
 
     torch.manual_seed(0)
     model = nn.Module()
@@ -195,7 +195,7 @@ def test_loading_never_allocates_at_bf16_width(tmp_path):
     from llmquant.core.config import ModelArgs, QuantConfig
     from llmquant.core.model import load_pretrained
     from llmquant.core.oneshot import oneshot
-    from llmquant.s3_pack import load_packed_model
+    from llmquant.packing import load_packed_model
 
     model, _ = load_pretrained(ModelArgs())
     bf16_bytes = sum(p.numel() * p.element_size() for p in model.parameters())

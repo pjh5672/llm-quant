@@ -14,10 +14,9 @@ import torch
 import torch.nn as nn
 
 from llmquant.core.scheme import QuantizationArgs, QuantizationScheme
-from llmquant.s3_pack.format import read_header, read_packed, write_packed
-from llmquant.s3_pack.packing import pack_weight, unpack_weight
-from llmquant.s4_kernel.expert_linear import KernelQuantExperts
-from llmquant.s4_kernel.quant_linear import KernelQuantLinear
+from llmquant.packing.format import read_header, read_packed, write_packed
+from llmquant.packing.packing import pack_weight, unpack_weight
+from llmquant.quantizers.kernel import KernelQuantExperts, KernelQuantLinear
 
 def _args_to_dict(args: QuantizationArgs | None):
     if args is None:
@@ -270,7 +269,7 @@ def packed_dtypes(path) -> dict:
     return {
         **{k: name_for(v) for k, v in groups.items()},
         "kv_cache": f"int{kv_bits}" if kv_bits else "bf16",
-        "activation": "bf16",  # the kernel path is weight-only; see s4_kernel
+        "activation": "bf16",  # the kernel path is weight-only; see cuda
     }
 
 

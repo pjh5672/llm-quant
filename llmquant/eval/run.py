@@ -1,6 +1,6 @@
 """One config -> one measured run.
 
-examples/auto_llm.py and examples/phase1_sweep.py both go through here, so a sweep row and
+examples/run.py and examples/phase1_sweep.py both go through here, so a sweep row and
 a standalone run of the same config cannot drift apart.
 
 What gets measured, and why:
@@ -28,7 +28,7 @@ from llmquant.core.datasets import get_eval_ids, get_generation_task
 from llmquant.core.metrics import model_metrics
 from llmquant.core.model import load_pretrained
 from llmquant.core.oneshot import oneshot
-from llmquant.s1_fake import make_cache_factory
+from llmquant.quantizers import make_cache_factory
 from llmquant.eval.evaluate import (
     evaluate_generation_task,
     evaluate_lambada,
@@ -72,7 +72,7 @@ def run_one(config) -> dict:
     if config.load_packed:
         # the whole point of a packed file: the bf16 model is never built, so there is also
         # nothing to cost the quantized one against
-        from llmquant.s3_pack import load_packed_model, packed_dtypes
+        from llmquant.packing import load_packed_model, packed_dtypes
 
         model = load_packed_model(config.load_packed, device=config.device)
         tokenizer = AutoTokenizer.from_pretrained(config.model)
@@ -86,7 +86,7 @@ def run_one(config) -> dict:
         if recipe is not None:
             oneshot(model, recipe)
         if config.pack:
-            from llmquant.s3_pack import save_packed_model
+            from llmquant.packing import save_packed_model
 
             save_packed_model(
                 model,

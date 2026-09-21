@@ -10,7 +10,7 @@
 # 74.3 tok/s, below the bf16 baseline. Only ~45% of a decode step is weight bandwidth here,
 # so halving the weight bytes cannot pay for the dequant on the way in. What puts this over
 # the baseline is head_weight, below. Larger models should behave better, since weights take
-# a bigger share of the step. Measure before assuming: examples/auto_llm.py --mode kernel.
+# a bigger share of the step. Measure before assuming: examples/run.py --mode kernel.
 #
 # Why these four axes are what they are:
 #   attn int8  int4 attention costs +30.08% accuracy and saves the least (dBPV -1.09).

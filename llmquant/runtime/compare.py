@@ -22,7 +22,7 @@ Two ways to run it, and they answer different questions:
 from dataclasses import dataclass, field
 
 from llmquant.eval.evaluate import generation_agreement
-from llmquant.s5_chat.session import ChatSession
+from llmquant.runtime.chat import ChatSession
 
 __all__ = ["ComparisonSession", "ComparisonTurn"]
 
@@ -122,14 +122,14 @@ def load_for_comparison(packed_path=None, config=None, reference_model=None,
 
     from llmquant.core.config import ModelArgs
     from llmquant.core.model import load_pretrained
-    from llmquant.s5_chat.session import load_for_chat
+    from llmquant.runtime import load_for_chat
 
     model, tokenizer, cache_factory = load_for_chat(
         packed_path=packed_path, config=config, device=device
     )
     if reference_model is None:
         if packed_path is not None:
-            from llmquant.s3_pack import read_header
+            from llmquant.packing import read_header
 
             reference_model = read_header(packed_path)["meta"]["model_id"]
         elif config is not None:

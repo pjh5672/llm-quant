@@ -1,15 +1,11 @@
-"""One folder per phase of NOTES.md.
+"""Which implementation a `mode` selects.
 
-The folders line up with the `mode` config field, so "which code runs for mode=real" is
-answered by looking at s2_real rather than by grepping:
+  fake    mode="fake"    dequantize and run bf16 -- what a dtype costs in accuracy
+  real    mode="real"    keep the integers, multiply in fp32 -- the reference
+  kernel  mode="kernel"  hand them to CUDA -- the path that gets deployed
 
-  s1_fake    mode="fake"    Phase 1  bf16 dequant, for measuring the accuracy cost
-  s2_real    mode="real"    Phase 2  int weights + verified PyTorch ops, the reference
-  s3_pack                   Phase 3  packing, the .bin format, the loader
-  s4_kernel  mode="kernel"  Phase 4  custom CUDA kernels reading packed data
-  s5_chat                   Phase 5  chat
-
-Only the stages that exist yet carry code; the rest state what will live there.
+One lookup per kind of layer, because a Mixture-of-Experts block is not an nn.Linear and
+cannot be swapped for one.
 """
 
 
@@ -20,15 +16,15 @@ def quant_linear_for(mode: str):
     dependency runs core -> stages, and only when a modifier is actually applied.
     """
     if mode == "fake":
-        from llmquant.s1_fake import FakeQuantLinear
+        from llmquant.quantizers import FakeQuantLinear
 
         return FakeQuantLinear
     if mode == "real":
-        from llmquant.s2_real import RealQuantLinear
+        from llmquant.quantizers import RealQuantLinear
 
         return RealQuantLinear
     if mode == "kernel":
-        from llmquant.s4_kernel import KernelQuantLinear
+        from llmquant.quantizers import KernelQuantLinear
 
         return KernelQuantLinear
     raise ValueError(f"unsupported mode {mode!r}, expected one of {sorted(AVAILABLE_MODES)}")
@@ -47,11 +43,11 @@ def quant_experts_for(mode: str):
     if mode == "fake":
         return None
     if mode == "real":
-        from llmquant.s2_real.real_experts import RealQuantExperts
+        from llmquant.quantizers import RealQuantExperts
 
         return RealQuantExperts
     if mode == "kernel":
-        from llmquant.s4_kernel.expert_linear import KernelQuantExperts
+        from llmquant.quantizers import KernelQuantExperts
 
         return KernelQuantExperts
     raise ValueError(f"unsupported mode {mode!r}, expected one of {sorted(AVAILABLE_MODES)}")

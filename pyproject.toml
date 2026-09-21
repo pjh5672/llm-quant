@@ -23,4 +23,4 @@ include = ["llmquant*"]
 
 [tool.setuptools.package-data]
 # the JIT build compiles these from the installed package
-llmquant = ["s4_kernel/csrc/*.cu", "s4_kernel/csrc/*.cpp"]
+llmquant = ["cuda/csrc/*.cu", "cuda/csrc/*.cpp"]

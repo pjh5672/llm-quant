@@ -1,6 +1,6 @@
 import torch
 
-from llmquant.s4_kernel.build import load_extension
+from llmquant.cuda.build import load_extension
 from llmquant.core.observers import pad_to_group
 from llmquant.core.scheme import QuantizationArgs
 

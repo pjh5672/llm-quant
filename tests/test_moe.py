@@ -119,7 +119,7 @@ def test_attention_is_exact_too_and_the_head_is_the_one_that_reorders():
 def test_experts_are_quantized_independently():
     """Grouping on the reduction axis of the stack gives every expert its own scales: one
     expert's range must not move another's quantization grid."""
-    from llmquant.s4_kernel import quantize_expert_stack
+    from llmquant.quantizers import quantize_expert_stack
 
     args = QuantConfig(mlp_weight="int8").scheme("mlp_weight").weights
     stack = torch.randn(4, 256, 256, device="cuda")
@@ -136,7 +136,7 @@ def packed_moe():
     """A packed MoE file, plus the model id it records."""
     from transformers import AutoTokenizer
 
-    from llmquant.s3_pack import save_packed_model
+    from llmquant.packing import save_packed_model
 
     workdir = Path(tempfile.mkdtemp(prefix="moe-test-"))
     try:
@@ -159,8 +159,8 @@ def packed_moe():
 
 
 def test_a_packed_moe_reloads_bit_identically(packed_moe):
-    from llmquant.s3_pack import load_packed_model
-    from llmquant.s4_kernel import KernelQuantExperts
+    from llmquant.packing import load_packed_model
+    from llmquant.quantizers import KernelQuantExperts
 
     path, ids, before = packed_moe
     model = load_packed_model(path, device="cuda")
@@ -171,7 +171,7 @@ def test_a_packed_moe_reloads_bit_identically(packed_moe):
 
 
 def test_a_packed_moe_is_smaller_than_the_bf16_model(packed_moe):
-    from llmquant.s3_pack import describe_packed
+    from llmquant.packing import describe_packed
 
     path, _, _ = packed_moe
     summary = describe_packed(path)
@@ -184,7 +184,7 @@ def test_a_packed_moe_is_smaller_than_the_bf16_model(packed_moe):
 
 
 def test_a_packed_moe_holds_a_multi_turn_conversation(packed_moe):
-    from llmquant.s5_chat import ChatSession, load_for_chat
+    from llmquant.runtime import ChatSession, load_for_chat
 
     path, _, _ = packed_moe
     model, tokenizer, cache_factory = load_for_chat(packed_path=path)

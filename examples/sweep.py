@@ -1,8 +1,8 @@
 """One command: point it at a model, get a finished quantization study.
 
-    python examples/study.py --cfg configs/sweep.yaml
-    python examples/study.py --cfg configs/sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
-    python examples/study.py --cfg configs/sweep.yaml --skip-verify   # sweep only
+    python examples/sweep.py --cfg configs/sweep.yaml
+    python examples/sweep.py --cfg configs/sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
+    python examples/sweep.py --cfg configs/sweep.yaml --skip-verify   # sweep only
 
 Six stages, in the order the conclusions actually depend on each other:
 
@@ -193,7 +193,7 @@ def main():
     print()
     print(f"wrote {sweep_path}")
     print(f"wrote {report_path}")
-    print(f"re-analyse without a GPU: python examples/phase1_analyze.py {sweep_path}")
+    print(f"re-analyse without a GPU: python examples/analyze.py {sweep_path}")
 
 
 if __name__ == "__main__":

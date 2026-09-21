@@ -1,4 +1,4 @@
-# A two-minute end-to-end check of examples/study.py: does every stage run and agree?
+# A two-minute end-to-end check of examples/sweep.py: does every stage run and agree?
 # Not a measurement -- the task limit is far too small to rank anything. Use sweep.yaml
 # for a real study.
 defaults:

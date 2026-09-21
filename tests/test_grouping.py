@@ -192,7 +192,7 @@ def test_a_fused_qkv_whose_heads_do_not_divide_is_refused():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 def test_a_fused_qkv_round_trips_through_quantization():
     from llmquant.core.config import QuantConfig
-    from llmquant.s1_fake import FakeQuantLinear
+    from llmquant.quantizers import FakeQuantLinear
 
     torch.manual_seed(0)
     linear, head_dim = _phi3_like(head_dim=96, num_heads=4, num_kv=2, hidden=256)

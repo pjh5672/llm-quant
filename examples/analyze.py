@@ -1,7 +1,7 @@
 """Re-analyse a finished sweep without re-running it (no GPU, no model).
 
-    python examples/phase1_analyze.py experiments/phase1-sweep/sweep.json
-    python examples/phase1_analyze.py experiments/phase1-sweep/sweep.json --bpv-weight 5
+    python examples/analyze.py experiments/phase1-sweep/sweep.json
+    python examples/analyze.py experiments/phase1-sweep/sweep.json --bpv-weight 5
 
 The weights are what turn the same measurements into different answers, so they are flags
 rather than something baked into the saved file.

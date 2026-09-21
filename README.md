@@ -25,24 +25,24 @@ one where `nvcc` dies silently because `%TMP%` contains a space.
 
 ```bash
 # the whole study: structure check -> sweep -> selection -> real-path verification -> report
-python examples/study.py --cfg configs/sweep.yaml
+python examples/sweep.py --cfg configs/sweep.yaml
 
 # same, on a different model
-python examples/study.py --cfg configs/sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
+python examples/sweep.py --cfg configs/sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
 
 # two-minute plumbing check
-python examples/study.py --cfg configs/smoke.yaml
+python examples/sweep.py --cfg configs/smoke.yaml
 
 # one configuration, no sweep
-python examples/auto_llm.py --cfg configs/recommended.yaml
+python examples/run.py --cfg configs/recommended.yaml
 
 # chat with a packed model
-python examples/phase5_chat.py --load-packed experiments/<project>/model.bin
+python examples/chat.py --load-packed experiments/<project>/model.bin
 ```
 
-`study.py` writes `reports/<project>.md` (committable, meant to be diffed against the next
+`sweep.py` writes `reports/<project>.md` (committable, meant to be diffed against the next
 model) and `experiments/<project>/sweep.json` (re-analysable without a GPU via
-`examples/phase1_analyze.py`).
+`examples/analyze.py`).
 
 ## The five stages, end to end
 
@@ -54,7 +54,7 @@ a question the next one depends on.
 ### 1. Fake quant — what does this cost in accuracy?
 
 ```bash
-python examples/auto_llm.py --cfg configs/recommended.yaml --mode fake
+python examples/run.py --cfg configs/recommended.yaml --mode fake
 ```
 
 ```
@@ -70,12 +70,12 @@ cheapest way to ask "how much accuracy does this dtype combination cost" — and
 thing it is good for. **Its speed numbers are meaningless**: every combination stores the
 same bf16 bytes, so decode is identical across the grid and int8 activations measure
 *slower* for the quant they add. `configs/sweep.yaml` runs a grid of combinations this way;
-`examples/study.py` drives that and picks a winner.
+`examples/sweep.py` drives that and picks a winner.
 
 ### 2. Real quant — is the quantized arithmetic right?
 
 ```bash
-python examples/auto_llm.py --cfg configs/recommended.yaml --mode real
+python examples/run.py --cfg configs/recommended.yaml --mode real
 ```
 
 ```
@@ -94,7 +94,7 @@ of the same thing, agreeing to about 0.006% on perplexity.
 ### 3. Pack — write the integers to a file
 
 ```bash
-python examples/auto_llm.py --cfg configs/recommended.yaml --mode kernel --pack
+python examples/run.py --cfg configs/recommended.yaml --mode kernel --pack
 # -> experiments/<project>/model.bin
 ```
 
@@ -106,7 +106,7 @@ loaded without the config that produced it.
 ### 4. Load the packed file — does it still say the same thing?
 
 ```bash
-python examples/auto_llm.py --load-packed experiments/<project>/model.bin
+python examples/run.py --load-packed experiments/<project>/model.bin
 ```
 
 ```
@@ -134,7 +134,7 @@ exact, since integer sums do not depend on summation order.
 ### 5. Chat — multi-turn, on the packed weights
 
 ```bash
-python examples/phase5_chat.py --load-packed experiments/<project>/model.bin
+python examples/chat.py --load-packed experiments/<project>/model.bin
 ```
 
 ```
@@ -162,7 +162,7 @@ silently truncating.
 The same thing from Python:
 
 ```python
-from llmquant.s5_chat import ChatSession, load_for_chat
+from llmquant.runtime import ChatSession, load_for_chat
 
 model, tokenizer, cache_factory = load_for_chat(packed_path="experiments/<project>/model.bin")
 chat = ChatSession(model=model, tokenizer=tokenizer, cache_factory=cache_factory)
@@ -224,7 +224,7 @@ needs nothing special, since the MLP rule only pads the tail. A fused projection
 output is *not* a multiple of `head_dim` is refused rather than split wrongly.
 
 An unmatched layer is left in bf16, which is safe but silent — the run finishes and reports
-a quantized config having quantized nothing. So stage 1 of `examples/study.py` checks and
+a quantized config having quantized nothing. So stage 1 of `examples/sweep.py` checks and
 says so before any measurement happens:
 
 ```
@@ -235,6 +235,73 @@ says so before any measurement happens:
 or, for a partial match, which Linears were missed and how much of the model they are.
 Supporting another architecture means adding its patterns in `core/modifier.py` — and, if
 its attention is shaped differently, checking that `core/layout.py`'s head rules still hold.
+
+## The scripts
+
+Five, each doing one thing. All of them take `--cfg` plus any flag from the config, and a
+CLI flag always wins over the file.
+
+### `run.py` — one configuration, measured
+
+```bash
+python examples/run.py --cfg configs/recommended.yaml
+python examples/run.py --cfg configs/recommended.yaml --mode kernel --pack
+python examples/run.py --load-packed experiments/<project>/model.bin
+python examples/run.py --cfg configs/recommended.yaml --mlp-weight int4   # the flag wins
+```
+
+The workhorse. Loads a model, applies one recipe, and reports accuracy, perplexity, cost
+and latency for it. `--pack` writes the packed file (and needs `--mode kernel`, since the
+packed layout is the one the kernel reads); `--load-packed` skips quantizing and measures a
+file that already exists.
+
+### `sweep.py` — the whole study, one command
+
+```bash
+python examples/sweep.py --cfg configs/sweep.yaml
+python examples/sweep.py --cfg configs/sweep.yaml --model Qwen/Qwen2.5-1.5B-Instruct
+python examples/sweep.py --cfg configs/smoke.yaml          # two-minute plumbing check
+python examples/sweep.py --cfg configs/sweep.yaml --skip-verify
+```
+
+Expands the `sweep:` grid and runs every combination through the same code path `run.py`
+uses, then picks a winner and **re-measures it on the real path**. That last part is not a
+formality: the analytic estimate the ranking uses is a ratio of bytes and cannot price work
+done outside the kernel, and it was wrong by more than 2x the first time it mattered. Writes
+`reports/<project>.md` and `experiments/<project>/sweep.json`.
+
+### `analyze.py` — re-rank a finished sweep, no GPU
+
+```bash
+python examples/analyze.py experiments/<project>/sweep.json
+python examples/analyze.py experiments/<project>/sweep.json --bpv-weight 5 --no-limit
+```
+
+The weights are what turn the same measurements into different answers, so they are flags
+rather than something baked into the saved file. Useful for asking "what if I cared more
+about size than accuracy" without paying for the sweep again.
+
+### `chat.py` — talk to it
+
+```bash
+python examples/chat.py --load-packed experiments/<project>/model.bin
+python examples/chat.py --cfg configs/recommended.yaml --mode kernel
+python examples/chat.py --load-packed model.bin --ask "What is a prime number?"
+```
+
+Multi-turn: the conversation and its KV cache are carried across turns rather than
+re-encoded, and the oldest turns are dropped when the context fills. `/reset` clears both,
+`/exit` leaves, `--ask` does one question and returns.
+
+### `bench_gemm.py` — the GEMM primitives on their own
+
+```bash
+python examples/bench_gemm.py --m 1 64 512 2048
+```
+
+Times bf16 against int8 at the shapes this model actually uses, without a model around
+them. This is the measurement that decided A8 was not worth having: int8 GEMM came out at
+1.03-1.04x of bf16 here, and decode cannot call it at all.
 
 ## Configuration
 
@@ -399,24 +466,25 @@ int8 products peaks at 2.06M, so it holds.
 
 ```
 llmquant/
-  core/       config, schemes, scale computation, quant-dequant math, layout, cost metrics
-  eval/       running, measuring, analysing, reporting
-  modes.py    mode -> Linear class, the one place core reaches into a phase
-  s1_fake/    mode="fake"    bf16 dequant, for measuring the accuracy cost
-  s2_real/    mode="real"    int weights in exact fp32 math, the reference
-  s3_pack/                   packing, the .bin format, the loader
-  s4_kernel/  mode="kernel"  CUDA kernels, and the graphed decode loop
-  s5_chat/                   conversation on a packed model
-examples/     study.py (full pipeline), auto_llm.py (one run), phase1_analyze.py, ...
-configs/      recommended / sweep / smoke; CLI flags override
-prototypes/   tried and rejected, kept with its numbers
-tests/        283 tests
-NOTES.md      the working notes, in Korean, far more detailed than this
+  core/         config, schemes, scale computation, quant-dequant math, layout, cost metrics
+  quantizers/   the three implementations and the lookup that picks one:
+                  fake.py    dequantize and run bf16 -- what a dtype costs in accuracy
+                  real.py    keep the integers, multiply in fp32 -- the reference
+                  kernel.py  hand them to CUDA -- the path that gets deployed
+  cuda/         building and calling the kernels, and csrc/
+  packing/      the single-file format: pack, write, read, load
+  runtime/      running one: graphed decode, chat, and bf16 comparison
+  eval/         measuring, analysing, reporting
+examples/       run / sweep / analyze / chat / bench_gemm
+configs/        recommended / sweep / smoke; CLI flags override
+prototypes/     tried and rejected, kept with its numbers
+tests/          318 tests
+NOTES.md        the working notes, in Korean, far more detailed than this
 ```
 
-`core` reaches into a phase in exactly one place: `modifier.apply()` asks
-`modes.quant_linear_for()` for the Linear class matching `mode`, via a deferred import so
-the dependency does not become a module-level cycle.
+`core` reaches into a quantizer in exactly one place: `modifier.apply()` asks
+`quantizers.dispatch.quant_linear_for()` for the class matching `mode`, via a deferred
+import so the dependency does not become a module-level cycle.
 
 ## Tests
 
