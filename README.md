@@ -120,8 +120,16 @@ back out of the file, not from any config.
 
 **This is the verification.** The accuracy here is identical to stage 3's, which is what
 "packing is lossless" means in practice. The stricter checks live in the test suite: the
-packed integers and scales compare `torch.equal` against what was packed, and the kernel's
-output matches the stage-2 reference exactly at decode shapes.
+packed integers and scales compare `torch.equal` against what was packed, and a packed
+model's logits are bit-identical to the same model before packing.
+
+The kernel against the stage-2 reference is bit-identical at decode shapes for the layers
+themselves, but not guaranteed for a whole model. The GEMV scales each lane's partial sum
+and reduces once at the end rather than reducing per group -- the same sum in exact
+arithmetic, and up to an ulp apart in floating point. On a small Mixtral that shows up as
+about 4e-09 on the logits once `lm_head` is quantized, while attention and the experts stay
+exactly equal. The reordering is deliberate: it is what would let an int-by-int kernel be
+exact, since integer sums do not depend on summation order.
 
 ### 5. Chat — multi-turn, on the packed weights
 
@@ -181,14 +189,14 @@ architectures that name or shape things differently — GPT-2 (`attn.c_attn`, an
 rather than `Linear`), Falcon and GPT-NeoX (`query_key_value`), or OPT (`fc1`/`fc2` outside
 any `mlp`).
 
-A Mixture-of-Experts is quantized but only on the fake path. transformers keeps Mixtral's
-experts as stacked `nn.Parameter`s rather than Linear modules, and this project quantizes by
-replacing Linears, so there is no module to swap. Fake quant does not need one — it writes a
-dequantized tensor of the same shape back into the parameter and the expert forward is
-unchanged — so the accuracy question can be answered. `--mode real` and `--mode kernel`
-raise rather than quantizing the attention and leaving 97% of the model alone. Each expert
-slice `[out, in]` is used exactly as a Linear weight with the reduction axis last, so the
-MLP rule already describes it, and grouping on that axis gives every expert its own scales.
+A Mixture-of-Experts goes through every stage, including packing and chat. transformers
+keeps Mixtral's experts as stacked `nn.Parameter`s rather than Linear modules, so there is
+no Linear to swap — but there is a block to swap. `MixtralExperts.forward` already loops
+over the experts a batch hit and calls `F.linear(tokens, gate_up_proj[e])` on each, and
+`gate_up_proj[e]` is an ordinary `[out, in]` weight with the reduction axis last. So the
+existing weight-only GEMV runs it unchanged, once per hit expert, and **no new CUDA kernel
+was needed**. Fake quant does not even swap the block: it writes dequantized weights back
+into the parameters and leaves the forward alone.
 
 **The router stays bf16 deliberately.** It is one `[num_experts, hidden]` matrix whose
 output is argmaxed into a discrete choice of expert, so an error there does not perturb a
@@ -199,6 +207,12 @@ Costing a MoE is different too, and the metrics know: disk pays for every expert
 router picks `top_k` of `num_experts`, so only that fraction is read per token. The bf16
 baseline is routed the same way, since scaling top-k for the quantized run alone would
 credit quantization with the router's work.
+
+**Mixtral-8x7B itself does not fit a 16 GB card** — 21.7 GB at int4, and quantizing it needs
+it in bf16 first at 87 GB. The code path is exercised end to end against a small
+`MixtralForCausalLM`: real transformers routing, real expert loop, small dimensions. Running
+the 8x7B checkpoint needs either a bigger GPU or layer-at-a-time quantization, which this
+does not do yet.
 
 Phi-3's fused projections work because the layout rules already describe them. `qkv_proj`
 emits q, k and v from one Linear, but its output axis is still nothing but `head_dim`-sized

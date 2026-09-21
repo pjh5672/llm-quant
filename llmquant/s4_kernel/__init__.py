@@ -12,10 +12,12 @@ from llmquant.s4_kernel.graph_decode import (
     can_graph,
     graphed_generate,
 )
+from llmquant.s4_kernel.expert_linear import KernelQuantExperts, quantize_expert_stack
 from llmquant.s4_kernel.ops import fake_quantize_cuda
 from llmquant.s4_kernel.quant_linear import KERNEL_MAX_ROWS, KernelQuantLinear
 
 __all__ = [
+    "KernelQuantExperts",
     "WARMUP_CALLS",
     "GraphedDecoder",
     "KERNEL_MAX_ROWS",
@@ -24,4 +26,5 @@ __all__ = [
     "fake_quantize_cuda",
     "graphed_generate",
     "load_extension",
+    "quantize_expert_stack",
 ]

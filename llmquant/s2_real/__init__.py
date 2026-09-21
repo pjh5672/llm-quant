@@ -8,10 +8,16 @@ With group_size=128 a group's partial sum peaks near 2.06M, inside fp32's exact-
 range, so both W4A8 and W8A8 can use a plain fp32 matmul and stay bit-exact (TF32 off).
 """
 
+from llmquant.s2_real.real_experts import RealQuantExperts
 from llmquant.s2_real.real_quant_linear import (
     RealQuantLinear,
     exact_fp32_matmul,
     quantize_weight,
 )
 
-__all__ = ["RealQuantLinear", "exact_fp32_matmul", "quantize_weight"]
+__all__ = [
+    "RealQuantExperts",
+    "RealQuantLinear",
+    "exact_fp32_matmul",
+    "quantize_weight",
+]

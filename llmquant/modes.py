@@ -36,3 +36,27 @@ def quant_linear_for(mode: str):
 
 AVAILABLE_MODES = frozenset({"fake", "real", "kernel"})
 PLANNED_MODES: dict[str, str] = {}
+
+
+# The class transformers gives a Mixtral block's experts. Matched by name so that core does
+# not import transformers, and so a model that does not have one costs nothing.
+EXPERT_MODULE_NAMES = ("MixtralExperts",)
+
+
+def quant_experts_for(mode: str):
+    """The nn.Module a given mode swaps a stacked expert block for, or None for fake.
+
+    Fake quant has no module: it writes dequantized weights back into the parameters and
+    leaves the block alone, which is why it is the one mode a MoE has always worked on.
+    """
+    if mode == "fake":
+        return None
+    if mode == "real":
+        from llmquant.s2_real.real_experts import RealQuantExperts
+
+        return RealQuantExperts
+    if mode == "kernel":
+        from llmquant.s4_kernel.expert_linear import KernelQuantExperts
+
+        return KernelQuantExperts
+    raise ValueError(f"unsupported mode {mode!r}, expected one of {sorted(AVAILABLE_MODES)}")

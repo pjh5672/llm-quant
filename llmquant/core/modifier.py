@@ -145,11 +145,21 @@ class QuantizationModifier:
         # recipe is actually applied; see llmquant/__init__.py
         from llmquant.modes import quant_linear_for
 
+        from llmquant.modes import EXPERT_MODULE_NAMES, quant_experts_for
+
         quant_cls = quant_linear_for(self.mode)
+        expert_cls = quant_experts_for(self.mode)
         self.resolve(model)
 
         replacements = []
         for name, module in model.named_modules():
+            if type(module).__name__ in EXPERT_MODULE_NAMES:
+                # stacked experts are the MLP of a MoE block, so they take the mlp scheme
+                if expert_cls is not None and self.mlp_scheme is not None:
+                    replacements.append(
+                        (name, expert_cls.from_experts(module, _resolve(self.mlp_scheme)))
+                    )
+                continue
             if type(module).__name__ not in self.targets:
                 continue
             scheme = self.scheme_for(name)
@@ -180,17 +190,11 @@ class QuantizationModifier:
 
         from llmquant.core.quant_ops import fake_quantize
 
+        if self.mode != "fake":
+            return  # real and kernel swap the whole block instead; see modes.quant_experts_for
         targets = self.expert_parameters(model)
         if not targets:
             return
-        if self.mode != "fake":
-            raise NotImplementedError(
-                f"mode={self.mode!r} cannot quantize a Mixture-of-Experts: its experts are "
-                f"stacked Parameters, not Linear modules, so there is no module to swap "
-                f"and no batched expert kernel to swap it for. Use mode='fake' to measure "
-                f"the accuracy cost. ({len(targets)} expert tensors found, e.g. "
-                f"{targets[0][0]})"
-            )
         args = self.mlp_scheme.weights
         with torch.no_grad():
             for _, param in targets:

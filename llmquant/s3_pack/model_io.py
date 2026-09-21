@@ -16,6 +16,7 @@ import torch.nn as nn
 from llmquant.core.scheme import QuantizationArgs, QuantizationScheme
 from llmquant.s3_pack.format import read_header, read_packed, write_packed
 from llmquant.s3_pack.packing import pack_weight, unpack_weight
+from llmquant.s4_kernel.expert_linear import KernelQuantExperts
 from llmquant.s4_kernel.quant_linear import KernelQuantLinear
 
 def _args_to_dict(args: QuantizationArgs | None):
@@ -63,12 +64,35 @@ def save_packed_model(
         if module.bias is not None:
             tensors[f"{name}.bias"] = module.bias
 
+    # A Mixture-of-Experts block is one module holding every expert, so it is written as
+    # one entry with its two stacked tensors rather than as E separate layers. pack_weight
+    # works on the last axis, which is the group axis either way, so the [E, out, groups,
+    # gs] stack packs exactly as a [out, groups, gs] weight does.
+    experts = {}
+    for name, module in model.named_modules():
+        if not isinstance(module, KernelQuantExperts):
+            continue
+        args = module.scheme.weights
+        tensors[f"{name}.qgate_up"] = pack_weight(module.qgate_up, args.num_bits)
+        tensors[f"{name}.sgate_up"] = module.sgate_up
+        tensors[f"{name}.qdown"] = pack_weight(module.qdown, args.num_bits)
+        tensors[f"{name}.sdown"] = module.sdown
+        experts[name] = {
+            "num_experts": module.num_experts,
+            "hidden_dim": module.hidden_dim,
+            "intermediate_dim": module.intermediate_dim,
+            "gate_up_shape": list(module.qgate_up.shape),
+            "down_shape": list(module.qdown.shape),
+            "weights": _args_to_dict(args),
+            "input_activations": _args_to_dict(module.scheme.input_activations),
+        }
+
     # everything that was never quantized travels as bf16, so one file loads the whole model.
     # A quantized layer owns more than qweight and wscale -- it also carries buffers derived
     # from them, and writing those out as bf16 meant the loader overwrote a value its own
     # constructor had just computed exactly. So the whole layer is excluded by prefix, which
     # also means adding another derived buffer later cannot reintroduce the bug.
-    owned = tuple(f"{layer}." for layer in layers)
+    owned = tuple(f"{layer}." for layer in (*layers, *experts))
     state = model.state_dict()
     for name, tensor in state.items():
         if name.startswith(owned) or name in tensors:
@@ -90,6 +114,7 @@ def save_packed_model(
     meta = {
         "model_id": model_id,
         "layers": layers,
+        "experts": experts,
         "non_persistent_buffers": non_persistent,
         # the KV cache is quantized at generate time rather than stored, so nothing in the
         # weights records it; without this a packed file would silently chat in bf16 cache
@@ -126,8 +151,28 @@ def load_packed_model(path, device="cuda", dtype=torch.bfloat16):
         )
         _replace(model, name, module)
 
+    for name, spec in (meta.get("experts") or {}).items():
+        args = _args_from_dict(spec["weights"])
+        scheme = QuantizationScheme(
+            weights=args, input_activations=_args_from_dict(spec["input_activations"])
+        )
+        qgate_up = unpack_weight(tensors[f"{name}.qgate_up"], args.num_bits)
+        qdown = unpack_weight(tensors[f"{name}.qdown"], args.num_bits)
+        # act_fn is architecture, not weights: take it from the block being replaced
+        module = KernelQuantExperts(
+            qgate_up.reshape(spec["gate_up_shape"]).to(device),
+            tensors[f"{name}.sgate_up"].to(device),
+            qdown.reshape(spec["down_shape"]).to(device),
+            tensors[f"{name}.sdown"].to(device),
+            scheme,
+            spec["hidden_dim"],
+            spec["intermediate_dim"],
+            model.get_submodule(name).act_fn,
+        )
+        _replace(model, name, module)
+
     non_persistent = set(meta.get("non_persistent_buffers", []))
-    owned = tuple(f"{layer}." for layer in meta["layers"])
+    owned = tuple(f"{layer}." for layer in (*meta["layers"], *(meta.get("experts") or {})))
     remaining = {
         name: tensor.to(device=device, dtype=dtype)
         for name, tensor in tensors.items()
