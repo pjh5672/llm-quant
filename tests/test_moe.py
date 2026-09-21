@@ -194,3 +194,13 @@ def test_a_packed_moe_holds_a_multi_turn_conversation(packed_moe):
     chat.ask("And again?")
     assert isinstance(first, str)
     assert len(chat.history) == 4      # two turns, both sides recorded
+
+
+def test_parameter_split_counts_the_experts():
+    """Walking Linear modules alone called OLMoE-1B-7B 57% attention, when attention is
+    3.9% of it and the experts are 93%. The note it feeds says where quantizing pays."""
+    from llmquant.eval.inspect import parameter_split
+
+    split = parameter_split(_model())
+    assert "experts" in split
+    assert split["experts"] > split["attn"]

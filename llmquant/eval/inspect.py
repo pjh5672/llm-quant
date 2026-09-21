@@ -163,14 +163,28 @@ def pattern_coverage(model, recipe) -> dict:
 
 
 def parameter_split(model) -> dict:
-    """Where the parameters actually are, which is where quantizing them can pay."""
+    """Where the parameters actually are, which is where quantizing them can pay.
+
+    Stacked experts are counted too. Walking Linear modules alone said OLMoE-1B-7B was 57%
+    attention, when attention is 3.9% of it and the experts -- which are Parameters, not
+    Linears -- are 93%. The note this feeds points at "where a lower weight dtype can pay",
+    so getting it backwards is worse than not printing it.
+    """
+    from llmquant.core.modifier import stacked_expert_parameters
+
     split = {}
+    seen = set()
+    for name, param in stacked_expert_parameters(model):
+        split["experts"] = split.get("experts", 0) + param.numel()
+        seen.add(id(param))
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
             key = _group_of(name)
         elif isinstance(module, nn.Embedding):
             key = "embedding"
         else:
+            continue
+        if id(module.weight) in seen:
             continue
         split[key] = split.get(key, 0) + module.weight.numel()
     return split
