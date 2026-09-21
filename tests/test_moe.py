@@ -204,3 +204,47 @@ def test_parameter_split_counts_the_experts():
     split = parameter_split(_model())
     assert "experts" in split
     assert split["experts"] > split["attn"]
+
+
+def test_an_expert_block_is_found_by_shape_not_by_class_name():
+    """OlmoeExperts is MixtralExperts under another name, and keying off the class name
+    left it unswapped: fake quant worked while kernel mode quietly kept 93% of OLMoE in
+    bf16 and packed a 1.03x file."""
+    import torch.nn as nn
+
+    from llmquant.core.modifier import stacked_expert_blocks
+
+    class NotCalledMixtral(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_up_proj = nn.Parameter(torch.zeros(4, 512, 256))
+            self.down_proj = nn.Parameter(torch.zeros(4, 256, 256))
+            self.act_fn = torch.nn.functional.silu
+
+    model = nn.Module()
+    model.layers = nn.ModuleList([nn.Module()])
+    model.layers[0].mlp = nn.Module()
+    model.layers[0].mlp.experts = NotCalledMixtral()
+
+    blocks = stacked_expert_blocks(model)
+    assert [name for name, _ in blocks] == ["layers.0.mlp.experts"]
+
+
+def test_a_block_holding_expert_weights_but_shaped_differently_fails_loudly():
+    import torch.nn as nn
+
+    from llmquant.core.modifier import stacked_expert_blocks
+
+    class Strange(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_up_proj = nn.Parameter(torch.zeros(4, 512, 256))
+            # no down_proj, no act_fn
+
+    # nested, because the pattern anchors on ".experts." and real models always nest
+    model = nn.Module()
+    model.layers = nn.ModuleList([nn.Module()])
+    model.layers[0].mlp = nn.Module()
+    model.layers[0].mlp.experts = Strange()
+    with pytest.raises(NotImplementedError, match="missing"):
+        stacked_expert_blocks(model)

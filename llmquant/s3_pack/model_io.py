@@ -124,16 +124,53 @@ def save_packed_model(
     return write_packed(path, tensors, meta)
 
 
+def _materialize_remaining(model, device, dtype, provided=()):
+    """Give storage to whatever is still on meta and will not be assigned from the file.
+
+    torch.nn.Module.to_empty() would do this for the whole model, including the quantized
+    modules that already hold real int weights -- it would hand them fresh uninitialized
+    memory and silently undo the load.
+
+    `provided` is skipped because load_state_dict(assign=True) replaces those tensors
+    outright. Allocating them first means the empty tensor and the loaded one are both
+    resident for a moment, and on a large vocabulary the embedding alone made that
+    half a gigabyte.
+    """
+    provided = set(provided)
+    for prefix, module in model.named_modules():
+        for name, param in list(module.named_parameters(recurse=False)):
+            full = f"{prefix}.{name}" if prefix else name
+            if param is not None and param.is_meta and full not in provided:
+                empty = torch.empty(param.shape, dtype=dtype, device=device)
+                setattr(module, name, nn.Parameter(empty, requires_grad=param.requires_grad))
+        for name, buffer in list(module.named_buffers(recurse=False)):
+            full = f"{prefix}.{name}" if prefix else name
+            if buffer is not None and buffer.is_meta and full not in provided:
+                persistent = name not in getattr(module, "_non_persistent_buffers_set", set())
+                module.register_buffer(
+                    name,
+                    torch.empty(buffer.shape, dtype=buffer.dtype, device=device),
+                    persistent=persistent,
+                )
+
+
 def load_packed_model(path, device="cuda", dtype=torch.bfloat16):
-    """Rebuild the model from a packed file. The bf16 weights are never materialized."""
+    """Rebuild the model from a packed file.
+
+    Peak memory stays near the size of the
+    packed weights: nothing is ever allocated at bf16 width, not even briefly.
+    """
     from transformers import AutoConfig, AutoModelForCausalLM
 
     tensors, meta = read_packed(path)
     config = AutoConfig.from_pretrained(meta["model_id"])
     with torch.device("meta"):
         model = AutoModelForCausalLM.from_config(config)
-    model = model.to_empty(device=device)
 
+    # The quantized modules are built and swapped in FIRST, while everything around them is
+    # still on meta and costs nothing. to_empty() here instead would size every bf16
+    # parameter before replacing it -- 12.95 GB of peak to load OLMoE's 6.76 GB, and no way
+    # at all to load a packed model bigger than the card.
     for name, spec in meta["layers"].items():
         args = _args_from_dict(spec["weights"])
         qweight = unpack_weight(tensors[f"{name}.qweight"], args.num_bits)
@@ -170,6 +207,8 @@ def load_packed_model(path, device="cuda", dtype=torch.bfloat16):
             model.get_submodule(name).act_fn,
         )
         _replace(model, name, module)
+
+    _materialize_remaining(model, device, dtype, provided=tensors)
 
     non_persistent = set(meta.get("non_persistent_buffers", []))
     owned = tuple(f"{layer}." for layer in (*meta["layers"], *(meta.get("experts") or {})))

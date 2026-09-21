@@ -38,11 +38,6 @@ AVAILABLE_MODES = frozenset({"fake", "real", "kernel"})
 PLANNED_MODES: dict[str, str] = {}
 
 
-# The class transformers gives a Mixtral block's experts. Matched by name so that core does
-# not import transformers, and so a model that does not have one costs nothing.
-EXPERT_MODULE_NAMES = ("MixtralExperts",)
-
-
 def quant_experts_for(mode: str):
     """The nn.Module a given mode swaps a stacked expert block for, or None for fake.
 

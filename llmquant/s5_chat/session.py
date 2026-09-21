@@ -41,11 +41,13 @@ class ChatSession:
     # None -> ask the model. The generation has to fit inside this too, not just the prompt.
     max_context_tokens: int | None = None
     history: list = field(default_factory=list)
+    last_reply_ids: list = field(default_factory=list)
     _cache: object = field(default=None, repr=False)
 
     def reset(self):
         """Drop the conversation and its cache."""
         self.history.clear()
+        self.last_reply_ids = []
         self._cache = None
         return self
 
@@ -111,9 +113,11 @@ class ChatSession:
             pad_token_id=self.tokenizer.eos_token_id,
             **({"past_key_values": self._cache} if self._cache is not None else {}),
         )
-        reply = self.tokenizer.decode(
-            generated[0, inputs["input_ids"].shape[1] :], skip_special_tokens=True
-        ).strip()
+        new_ids = generated[0, inputs["input_ids"].shape[1] :]
+        # kept as ids, not just text: comparing two models means comparing the tokens they
+        # chose, and re-tokenizing the decoded string does not always give them back
+        self.last_reply_ids = new_ids.tolist()
+        reply = self.tokenizer.decode(new_ids, skip_special_tokens=True).strip()
         self.history.append({"role": "assistant", "content": reply})
         return reply
 

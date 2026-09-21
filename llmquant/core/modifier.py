@@ -66,6 +66,32 @@ def stacked_expert_parameters(model):
     ]
 
 
+def stacked_expert_blocks(model):
+    """(name, module) for every module that directly owns stacked expert weights.
+
+    Structural, not by class name: OlmoeExperts and MixtralExperts are the same module with
+    different names, and the next one will be too. A block that holds the tensors but not
+    the attributes the quantized module needs is reported so it fails loudly instead of
+    being half-converted.
+    """
+    owners = {}
+    for name, _ in stacked_expert_parameters(model):
+        parent, _, _ = name.rpartition(".")
+        owners[parent] = True
+    blocks = []
+    for name in owners:
+        module = model.get_submodule(name)
+        missing = [a for a in ("gate_up_proj", "down_proj", "act_fn") if not hasattr(module, a)]
+        if missing:
+            raise NotImplementedError(
+                f"{name} ({type(module).__name__}) holds stacked expert weights but is "
+                f"missing {missing}. The quantized expert module mirrors the Mixtral/OLMoE "
+                f"block; this architecture needs its own."
+            )
+        blocks.append((name, module))
+    return blocks
+
+
 def _set_module(model, name, module):
     parent_name, _, child_name = name.rpartition(".")
     parent = model.get_submodule(parent_name) if parent_name else model
@@ -145,20 +171,24 @@ class QuantizationModifier:
         # recipe is actually applied; see llmquant/__init__.py
         from llmquant.modes import quant_linear_for
 
-        from llmquant.modes import EXPERT_MODULE_NAMES, quant_experts_for
+        from llmquant.modes import quant_experts_for
 
         quant_cls = quant_linear_for(self.mode)
         expert_cls = quant_experts_for(self.mode)
         self.resolve(model)
 
         replacements = []
-        for name, module in model.named_modules():
-            if type(module).__name__ in EXPERT_MODULE_NAMES:
+        expert_blocks = set()
+        if expert_cls is not None and self.mlp_scheme is not None:
+            for name, module in stacked_expert_blocks(model):
+                expert_blocks.add(name)
                 # stacked experts are the MLP of a MoE block, so they take the mlp scheme
-                if expert_cls is not None and self.mlp_scheme is not None:
-                    replacements.append(
-                        (name, expert_cls.from_experts(module, _resolve(self.mlp_scheme)))
-                    )
+                replacements.append(
+                    (name, expert_cls.from_experts(module, _resolve(self.mlp_scheme)))
+                )
+
+        for name, module in model.named_modules():
+            if name in expert_blocks:
                 continue
             if type(module).__name__ not in self.targets:
                 continue

@@ -185,3 +185,39 @@ def test_mixed_widths_in_one_group_are_reported_as_mixed(tmp_path):
 
     path = save_packed_model(model, tmp_path / "mixed.bin", "test/model")
     assert packed_dtypes(path)["mlp_weight"] == "mixed"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_loading_never_allocates_at_bf16_width(tmp_path):
+    """to_empty() sized every bf16 parameter before the quantized modules replaced them,
+    so loading OLMoE's 6.76 GB of packed weights peaked at 12.95 GB -- and a packed model
+    larger than the card could not be loaded at all, which is most of the point of one."""
+    from llmquant.core.config import ModelArgs, QuantConfig
+    from llmquant.core.model import load_pretrained
+    from llmquant.core.oneshot import oneshot
+    from llmquant.s3_pack import load_packed_model
+
+    model, _ = load_pretrained(ModelArgs())
+    bf16_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+    oneshot(model, QuantConfig(attn_weight="int4", mlp_weight="int4",
+                               head_weight="int8").to_modifier(mode="kernel"))
+    path = save_packed_model(model, tmp_path / "m.bin", ModelArgs().model_id)
+    del model
+    torch.cuda.empty_cache()
+
+    torch.cuda.reset_peak_memory_stats()
+    loaded = load_packed_model(path, device="cuda")
+    peak = torch.cuda.max_memory_allocated()
+    resident = torch.cuda.memory_allocated()
+
+    # The property is that loading costs about what the loaded model costs, not that it
+    # beats some fraction of bf16: on this model int4 is held in int8 containers and
+    # quantizing lm_head unties the embedding, so the quantized model is not far below
+    # bf16 to begin with. On OLMoE the same fix took the peak from 12.95 GB to 6.94 GB
+    # against 6.75 GB resident.
+    assert peak < resident * 1.25, (
+        f"peak {peak / 1024**3:.2f} GB against {resident / 1024**3:.2f} GB resident "
+        f"(bf16 would be {bf16_bytes / 1024**3:.2f} GB) -- something was oversized"
+    )
+    assert not [n for n, p in loaded.named_parameters() if p.is_meta]
+    assert not [n for n, b in loaded.named_buffers() if b is not None and b.is_meta]
