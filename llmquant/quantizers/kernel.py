@@ -140,7 +140,10 @@ class KernelQuantExperts(nn.Module):
         self.intermediate_dim = intermediate_dim
         self.act_fn = act_fn
         self._weight_args = scheme.weights
-        self._gemv = load_extension().wq_gemv
+        extension = load_extension()
+        self._gemv = extension.wq_gemv
+        self._gemv_batched = extension.wq_gemv_batched
+        self._batched_max_rows = extension.wq_gemv_batched_max_rows()
         self._gate_up_padded = qgate_up.shape[2] * qgate_up.shape[3]
         self._down_padded = qdown.shape[2] * qdown.shape[3]
 
@@ -169,8 +172,82 @@ class KernelQuantExperts(nn.Module):
         weight = (qweight * broadcast).to(x.dtype).reshape(qweight.shape[0], -1)
         return x @ weight.T
 
+    def _plan(self, top_k_index):
+        """Which rows go to which expert, and the block list the batched kernel needs.
+
+        Rows are laid out grouped by expert so a block never straddles two of them: a block
+        keeps its slice of the weight in registers across its rows, and reloading halfway
+        through would give that up.
+
+        Built entirely on the device. The obvious version walks the counts in Python, which
+        needs them on the host, and those three round trips cost 0.432 ms of an 0.820 ms
+        block -- more than the two matmuls they were setting up. CUDA-event profiling cannot
+        see a host stall, so the block measured fine while decode stayed slower than bf16.
+
+        """
+        rows = top_k_index.numel()
+        flat = top_k_index.reshape(-1)
+        order = torch.argsort(flat, stable=True)
+        counts = torch.bincount(flat, minlength=self.num_experts)
+        starts = torch.cumsum(counts, 0) - counts
+
+        # worst case: one expert takes every row. Slots beyond an expert's share carry zero
+        # rows and the kernel returns on them immediately.
+        limit = self._batched_max_rows
+        slots = (rows + limit - 1) // limit
+        offset = torch.arange(slots, device=flat.device, dtype=torch.int64) * limit
+
+        block_expert = torch.arange(
+            self.num_experts, device=flat.device, dtype=torch.int64
+        ).repeat_interleave(slots)
+        taken = offset.repeat(self.num_experts)
+        per_expert = counts.repeat_interleave(slots)
+        block_row0 = starts.repeat_interleave(slots) + taken
+        block_rows = (per_expert - taken).clamp(0, limit)
+
+        return order, (block_expert.int(), block_row0.int(), block_rows.int())
+
+    def _batched(self, x, qweight, wscale, plan, real_in, padded_in):
+        if real_in != padded_in:
+            x = pad_activation(x, self._weight_args)
+        return self._gemv_batched(x, qweight, wscale, *plan, 0)
+
     def forward(self, hidden_states, top_k_index, top_k_weights):
-        """The routing of MixtralExperts.forward, with our kernel doing the projections."""
+        """Route, then run every hit expert in one launch per projection.
+
+        The loop this replaces was not slow because of the matmuls. On OLMoE-1B-7B it spent
+        4.01 ms per block against bf16's 0.955 ms, while the matmuls inside it came to about
+        0.19 ms -- top-8 of 64, two projections, sixteen layers is 256 separate launches for
+        one token. Above the row limit the kernel stops paying (each block would reread the
+        weight per row) and the per-expert cuBLAS path runs instead.
+        """
+        # A token cannot pick the same expert twice, so no expert ever gets more rows than
+        # there are tokens. That bounds the batched path from the shape alone -- asking the
+        # data would mean reading a count back from the device, which is the stall this
+        # whole rewrite was about.
+        if hidden_states.shape[0] > self._batched_max_rows:
+            return self._forward_looped(hidden_states, top_k_index, top_k_weights)
+
+        with torch.no_grad():
+            order, plan = self._plan(top_k_index)
+
+        tokens_per_row = order // top_k_index.shape[-1]
+        slot_per_row = order % top_k_index.shape[-1]
+        rows = hidden_states[tokens_per_row]
+
+        fused = self._batched(rows, self.qgate_up, self.sgate_up, plan,
+                              self.hidden_dim, self._gate_up_padded)
+        gate, up = fused.chunk(2, dim=-1)
+        out = self._batched(self.act_fn(gate) * up, self.qdown, self.sdown, plan,
+                            self.intermediate_dim, self._down_padded)
+        out = out * top_k_weights[tokens_per_row, slot_per_row, None]
+
+        final = torch.zeros_like(hidden_states)
+        final.index_add_(0, tokens_per_row, out.to(final.dtype))
+        return final
+
+    def _forward_looped(self, hidden_states, top_k_index, top_k_weights):
+        """One expert at a time, for the shapes the batched kernel is not built for."""
         final = torch.zeros_like(hidden_states)
         with torch.no_grad():
             mask = nn.functional.one_hot(top_k_index, num_classes=self.num_experts)

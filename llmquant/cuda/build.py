@@ -127,6 +127,7 @@ def load_extension(verbose: bool = False):
             str(CSRC / "fake_quant.cpp"),
             str(CSRC / "fake_quant.cu"),
             str(CSRC / "wq_gemv.cu"),
+            str(CSRC / "wq_gemv_batched.cu"),
         ],
         extra_cflags=CXX_FLAGS,
         extra_cuda_cflags=CUDA_FLAGS,

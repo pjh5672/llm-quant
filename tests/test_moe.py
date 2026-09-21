@@ -248,3 +248,112 @@ def test_a_block_holding_expert_weights_but_shaped_differently_fails_loudly():
     model.layers[0].mlp.experts = Strange()
     with pytest.raises(NotImplementedError, match="missing"):
         stacked_expert_blocks(model)
+
+
+# ---------------------------------------------------------------- batched expert kernel
+
+def _expert_block(experts=8, hidden=256, inter=128, top_k=4, bits="int8"):
+    from transformers import MixtralConfig
+    from transformers.models.mixtral.modeling_mixtral import MixtralExperts
+
+    from llmquant.quantizers import KernelQuantExperts
+
+    cfg = MixtralConfig(hidden_size=hidden, intermediate_size=inter,
+                        num_local_experts=experts, num_experts_per_tok=top_k,
+                        num_hidden_layers=1, num_attention_heads=8,
+                        num_key_value_heads=8, vocab_size=1000)
+    torch.manual_seed(0)
+    ref = MixtralExperts(cfg).cuda().to(torch.bfloat16).eval()
+    with torch.no_grad():
+        ref.gate_up_proj.normal_(0, 0.02)
+        ref.down_proj.normal_(0, 0.02)
+    quant = KernelQuantExperts.from_experts(
+        ref, QuantConfig(mlp_weight=bits).scheme("mlp_weight")
+    ).cuda().eval()
+    return ref, quant, cfg
+
+
+def _routing(tokens, experts, top_k):
+    index = torch.stack([torch.randperm(experts, device="cuda")[:top_k] for _ in range(tokens)])
+    weights = torch.rand(tokens, top_k, device="cuda", dtype=torch.bfloat16)
+    return index, weights
+
+
+def test_the_batched_kernel_is_bit_exact_per_row_against_the_loop():
+    """Row for row the two paths agree exactly. They can still differ once the rows are
+    added back together, because index_add_ accumulates duplicate indices with atomics in
+    no fixed order -- which the bf16 implementation does too."""
+    ref, quant, cfg = _expert_block()
+    tokens = 4
+    hidden = torch.randn(tokens, cfg.hidden_size, device="cuda", dtype=torch.bfloat16)
+    index, _ = _routing(tokens, cfg.num_local_experts, cfg.num_experts_per_tok)
+
+    with torch.no_grad():
+        order, plan = quant._plan(index)
+        rows = hidden[order // cfg.num_experts_per_tok]
+        batched = quant._batched(rows, quant.qgate_up, quant.sgate_up, plan,
+                                 quant.hidden_dim, quant._gate_up_padded)
+
+        flat = index.reshape(-1)
+        looped = torch.empty_like(batched)
+        for expert in flat.unique().tolist():
+            sel = (flat[order] == expert).nonzero().flatten()
+            looped[sel] = quant._matmul(
+                hidden[(order // cfg.num_experts_per_tok)[sel]],
+                quant.qgate_up[expert], quant.sgate_up[expert],
+                quant.hidden_dim, quant._gate_up_padded,
+            )
+    assert torch.equal(batched, looped)
+
+
+def test_a_block_never_straddles_two_experts():
+    """A block keeps its slice of the weight in registers across its rows; reloading
+    halfway through would give up the reuse the batching is for."""
+    _, quant, cfg = _expert_block()
+    index, _ = _routing(6, cfg.num_local_experts, cfg.num_experts_per_tok)
+    order, (block_expert, block_row0, block_rows) = quant._plan(index)
+
+    experts_of_row = index.reshape(-1)[order]
+    for expert, row0, count in zip(block_expert.tolist(), block_row0.tolist(),
+                                   block_rows.tolist()):
+        assert count <= quant._batched_max_rows
+        if count:   # the plan pads every expert to the same number of slots
+            assert (experts_of_row[row0:row0 + count] == expert).all()
+
+
+def test_every_row_is_covered_exactly_once():
+    _, quant, cfg = _expert_block()
+    index, _ = _routing(6, cfg.num_local_experts, cfg.num_experts_per_tok)
+    _, (_, block_row0, block_rows) = quant._plan(index)
+
+    covered = []
+    for row0, count in zip(block_row0.tolist(), block_rows.tolist()):
+        covered.extend(range(row0, row0 + count))   # empty slots contribute nothing
+    assert sorted(covered) == list(range(index.numel()))
+
+
+def test_wide_batches_fall_back_to_the_per_expert_path():
+    """Above the row limit each block would reread the weight per row, so the batched
+    kernel stops paying and cuBLAS runs instead."""
+    ref, quant, cfg = _expert_block(experts=2, top_k=2)
+    tokens = 64   # 64 tokens x top-2 over 2 experts is far past the limit
+    hidden = torch.randn(tokens, cfg.hidden_size, device="cuda", dtype=torch.bfloat16)
+    index, weights = _routing(tokens, cfg.num_local_experts, cfg.num_experts_per_tok)
+
+    # the fallback is decided from the shape: an expert cannot get more rows than there
+    # are tokens, so more tokens than the row limit is what sends it to the looped path
+    assert tokens > quant._batched_max_rows
+    with torch.no_grad():
+        out = quant(hidden, index, weights)
+    assert out.shape == hidden.shape and torch.isfinite(out).all()
+
+
+def test_the_batched_result_tracks_bf16():
+    ref, quant, cfg = _expert_block()
+    tokens = 2
+    hidden = torch.randn(tokens, cfg.hidden_size, device="cuda", dtype=torch.bfloat16)
+    index, weights = _routing(tokens, cfg.num_local_experts, cfg.num_experts_per_tok)
+    with torch.no_grad():
+        got = quant(hidden, index, weights).float()
+        want = ref(hidden, index, weights).float()
+    assert (got - want).abs().max() < want.abs().max() * 0.1
