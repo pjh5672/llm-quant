@@ -11,6 +11,15 @@
   <img alt="Tests" src="https://img.shields.io/badge/tests-334%20passing-brightgreen.svg">
 </p>
 
+<p align="center">
+  <img src="docs/assets/compare.svg" alt="bf16 and a W4-quantized model answering the same question side by side, with the point where they diverge highlighted" width="100%">
+</p>
+
+<p align="center">
+  <sub><code>chat.py --compare</code> puts the quantized model next to the bf16 one and shows where they part.
+  Greedy decoding on both, so every difference is quantization error.</sub>
+</p>
+
 Weights go to int4 or int8 in groups of 128 along the reduction axis; activations and the
 KV cache are separate choices. There is no calibration step — RTN only — so a configuration
 is a few dtypes and nothing has to be fit.

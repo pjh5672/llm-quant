@@ -123,3 +123,48 @@ def test_a_quantized_model_can_be_compared_against_bf16():
     assert 0.0 <= turn.agreement <= 1.0
     # W8 on this model reproduces bf16 on a question this easy
     assert "paris" in turn.candidate.lower()
+
+
+# ---------------------------------------------------------------- side-by-side layout
+
+def _turn(reference, candidate, **kw):
+    from llmquant.runtime import ComparisonTurn
+
+    base = {"prompt": "q", "reference": reference, "candidate": candidate,
+            "agreement": 0.5, "exact": reference == candidate, "first_divergence": None,
+            "reference_tokens": 1, "candidate_tokens": 1}
+    base.update(kw)
+    return ComparisonTurn(**base)
+
+
+def test_the_two_replies_print_in_columns_with_a_rule_between_them():
+    text = _turn("alpha beta gamma delta", "alpha beta epsilon zeta").format(width=60)
+    lines = text.splitlines()
+    assert lines[0].startswith("bf16") and "quantized" in lines[0]
+    body = [ln for ln in lines if "|" in ln and "-+-" not in ln]
+    assert body, "no column rows"
+    for line in body:
+        assert line.count("|") >= 1
+
+
+def test_columns_stay_aligned_when_one_side_is_longer():
+    short, long = "yes", " ".join(["word"] * 40)
+    text = _turn(long, short).format(width=60)
+    rows = [ln for ln in text.splitlines() if "|" in ln and "-+-" not in ln][1:]
+    separators = {ln.index("|") for ln in rows}
+    assert len(separators) == 1, f"the rule wanders: {separators}"
+
+
+def test_identical_replies_say_so_under_the_columns():
+    assert _turn("same text", "same text").format(width=60).splitlines()[-1] == "identical"
+
+
+def test_the_verdict_names_where_they_parted():
+    turn = _turn("a b c", "a b d", agreement=0.66, exact=False, first_divergence=2)
+    assert turn.verdict() == "66% of tokens agree, first difference at token 2"
+
+
+def test_width_zero_asks_the_terminal():
+    """chat.py passes 0 so the layout follows the window rather than a guess."""
+    text = _turn("alpha", "beta").format(width=0)
+    assert "|" in text and text.splitlines()[-1]

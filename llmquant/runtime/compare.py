@@ -6,6 +6,9 @@ different answers -- a combination reading +0.11% on perplexity changed 31% of i
 generations. So: ask both models the same thing, print both replies, and report how far
 they tracked each other.
 
+The two answers print in columns with a rule between them, because reading them against
+each other is the point: in columns the line where they part sits on the same row in both.
+
 Greedy decoding is deterministic, so every divergence is quantization error and nothing
 else. Once two greedy paths split they rarely rejoin, which is why the position of the
 first different token is reported next to the raw agreement: 90% agreement that begins at
@@ -40,15 +43,39 @@ class ComparisonTurn:
     reference_tokens: int
     candidate_tokens: int
 
-    def format(self, width: int = 88) -> str:
-        head = "identical" if self.exact else (
-            f"{self.agreement:.0%} of tokens agree"
-            + (f", first difference at token {self.first_divergence}"
-               if self.first_divergence is not None else "")
-        )
-        lines = [f"  bf16      > {self.reference[:width]}",
-                 f"  quantized > {self.candidate[:width]}",
-                 f"  {head}"]
+    def verdict(self) -> str:
+        if self.exact:
+            return "identical"
+        where = ("" if self.first_divergence is None
+                 else f", first difference at token {self.first_divergence}")
+        return f"{self.agreement:.0%} of tokens agree{where}"
+
+    def format(self, width: int = 100) -> str:
+        """Side by side, with a rule down the middle.
+
+        Reading two answers means reading them against each other, and stacked paragraphs
+        make that a scroll. In columns the line where they part is on the same row in both,
+        which is the thing worth seeing.
+        """
+        import shutil
+        import textwrap
+
+        if width <= 0:
+            width = shutil.get_terminal_size((100, 24)).columns
+        column = max(24, (width - 3) // 2)
+
+        left = textwrap.wrap(self.reference, column) or [""]
+        right = textwrap.wrap(self.candidate, column) or [""]
+        rows = max(len(left), len(right))
+        left += [""] * (rows - len(left))
+        right += [""] * (rows - len(right))
+
+        rule = "-" * column
+        header = f"{'bf16'.ljust(column)} | {'quantized'}"
+        lines = [header, f"{rule}-+-{rule}"]
+        lines += [f"{a.ljust(column)} | {b}" for a, b in zip(left, right, strict=True)]
+        lines.append(f"{rule}-+-{rule}")
+        lines.append(self.verdict())
         return "\n".join(lines)
 
 

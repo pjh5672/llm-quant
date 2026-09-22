@@ -16,6 +16,11 @@ run ends either at the model's position limit or at an out-of-memory, both of th
 from here and neither of them legible. So the oldest turns are dropped to stay inside
 `max_context_tokens`, which defaults to what the model says it can attend over.
 
+`max_new_tokens` is reserved out of that budget before a turn is generated, so asking for
+long answers buys them with history: at 8192 reserved, a 131072-token model still has room
+for a long conversation, while a 4096-token one has none left at all and says so rather
+than truncating mid-answer.
+
 Dropping from the front invalidates the cache: its entries are positional, and the prefix
 they were computed from is gone. So a trim resets the cache, and that turn pays a full
 re-encode. That is the cost of the bound, and it only arrives once the conversation is
@@ -35,8 +40,11 @@ class ChatSession:
 
     model: object
     tokenizer: object
-    max_new_tokens: int = 256
+    max_new_tokens: int = 2048
     system_prompt: str | None = SYSTEM_PROMPT
+    # print tokens as they are decoded rather than only the finished reply. Long answers
+    # are the reason: at 90 tok/s an 8192-token answer is a minute and a half of silence.
+    stream: bool = False
     cache_factory: object = None
     # None -> ask the model. The generation has to fit inside this too, not just the prompt.
     max_context_tokens: int | None = None
@@ -94,6 +102,16 @@ class ChatSession:
             inputs = self._encode()
         return inputs, dropped
 
+    def _streamer(self):
+        """A TextStreamer that prints only what the model adds.
+
+        The reply is still returned in full from the ids, so a caller that streams must not
+        print the return value again -- it has already been on screen once.
+        """
+        from transformers import TextStreamer
+
+        return TextStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+
     @torch.no_grad()
     def ask(self, prompt: str) -> str:
         """Add a user turn, generate the reply, keep both in the history."""
@@ -111,6 +129,7 @@ class ChatSession:
             max_new_tokens=self.max_new_tokens,
             do_sample=False,
             pad_token_id=self.tokenizer.eos_token_id,
+            **({"streamer": self._streamer()} if self.stream else {}),
             **({"past_key_values": self._cache} if self._cache is not None else {}),
         )
         new_ids = generated[0, inputs["input_ids"].shape[1] :]

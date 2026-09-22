@@ -5,6 +5,12 @@
     python examples/chat.py --load-packed model.bin --ask "What is a prime number?"
     python examples/chat.py --load-packed model.bin --compare
     python examples/chat.py --load-packed big.bin --compare --reference-device cpu
+    python examples/chat.py --load-packed model.bin --max-new-tokens 8192
+    python examples/chat.py --load-packed model.bin --no-stream
+
+Replies stream to the terminal as they are decoded, because at 90 tok/s a long answer is
+otherwise a minute of silence. `--compare` turns that off: its two columns cannot be filled
+token by token at once, so it prints once both models have answered.
 
 With --load-packed the bf16 model is never built: the architecture comes from the model id
 recorded in the file and the weights straight from the packed integers. The KV cache dtype
@@ -29,7 +35,11 @@ def main():
     parser.add_argument("--cfg", type=str, default=None, help="quantize now, from a config")
     parser.add_argument("--mode", type=str, default=None, choices=("fake", "real", "kernel"))
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument("--max-new-tokens", type=int, default=2048,
+                        help="reserved out of the context budget; 8192 works on a model "
+                             "whose position limit leaves room for it")
+    parser.add_argument("--no-stream", action="store_true",
+                        help="wait for the whole reply instead of printing it as it comes")
     parser.add_argument("--ask", type=str, default=None, help="one question, then exit")
     parser.add_argument("--compare", action="store_true",
                         help="answer with the bf16 model too, and report where they part")
@@ -50,6 +60,10 @@ def main():
     torch.manual_seed(0)
     source = args.load_packed or f"{args.cfg} (mode={config.mode})"
 
+    # streaming and the side-by-side layout are exclusive: two columns cannot be filled
+    # token by token at the same time, so a comparison prints once both answers are in
+    streaming = not args.no_stream and not args.compare
+
     if args.compare:
         session = load_for_comparison(
             packed_path=args.load_packed, config=config, device=args.device,
@@ -68,15 +82,23 @@ def main():
             tokenizer=tokenizer,
             max_new_tokens=args.max_new_tokens,
             cache_factory=cache_factory,
+            stream=streaming,
         )
         print(f"loaded {source}; KV cache {'quantized' if cache_factory else 'bf16'}")
 
     def answer(prompt):
-        result = session.ask(prompt)
-        return result.format() if args.compare else f"model> {result}"
+        if args.compare:
+            return session.ask(prompt).format(width=0)   # 0 -> the terminal's width
+        if streaming:
+            print("model> ", end="", flush=True)
+            session.ask(prompt)      # the streamer already printed it
+            return ""
+        return f"model> {session.ask(prompt)}"
 
     if args.ask:
-        print(answer(args.ask))
+        text = answer(args.ask)
+        if text:
+            print(text)
         return
 
     print("type /reset to clear the conversation, /exit to leave")
@@ -97,7 +119,9 @@ def main():
             print(session.summary() or "(nothing asked yet)")
             continue
         print()
-        print(answer(prompt))
+        text = answer(prompt)
+        if text:
+            print(text)
 
 
 if __name__ == "__main__":

@@ -222,3 +222,26 @@ def test_load_for_chat_accepts_a_config():
     )
     model, tokenizer, _cache_factory = load_for_chat(config=config)
     assert model is not None and tokenizer is not None
+
+
+def test_streaming_is_off_unless_asked_for():
+    session = ChatSession(model=StubModel(), tokenizer=StubTokenizer())
+    assert session.stream is False
+
+
+def test_a_streaming_session_hands_generate_a_streamer():
+    session = ChatSession(model=StubModel(), tokenizer=StubTokenizer(), stream=True)
+    session.ask("hello")
+    assert "streamer" in session.model.calls[0]
+
+
+def test_a_quiet_session_does_not():
+    session = ChatSession(model=StubModel(), tokenizer=StubTokenizer())
+    session.ask("hello")
+    assert "streamer" not in session.model.calls[0]
+
+
+def test_the_default_ceiling_leaves_room_for_long_answers():
+    """256 was a silent cap on anything essay-length; the guard reserves whatever this is
+    out of the context budget, so it has to be a deliberate number."""
+    assert ChatSession(model=StubModel(), tokenizer=StubTokenizer()).max_new_tokens >= 2048

@@ -185,7 +185,20 @@ Multi-turn: the conversation and its KV cache are carried across turns rather th
 re-encoded, and the oldest turns are dropped when the context fills. `/reset` clears both,
 `/exit` leaves, `--ask` does one question and returns.
 
-`--compare` answers with the bf16 model as well and reports where the two part:
+Replies stream to the terminal as they are decoded. At 90 tok/s a long answer is otherwise
+a minute of silence, and there is nothing to look at until it ends. `--no-stream` waits for
+the whole thing instead.
+
+`--max-new-tokens` defaults to 2048 and 8192 works, at 53 tok/s and 2.26 GB of peak VRAM on
+Llama-3.2-1B — but it is reserved out of the context budget before the turn runs, so long
+answers are bought with history. A model whose position limit leaves no room for it says so
+rather than truncating mid-answer: OLMoE-1B-7B stops at 4096 positions, so 8192 is not a
+thing it can be asked for.
+
+`--compare` answers with the bf16 model as well and prints the two in columns, with a rule
+between them and the verdict underneath — in columns the line where they part sits on the
+same row in both, which is the thing worth seeing. Streaming turns off for it, since two
+columns cannot be filled token by token at once.
 
 ```bash
 python examples/chat.py --load-packed model.bin --compare
@@ -193,15 +206,16 @@ python examples/chat.py --load-packed big.bin --compare --reference-device cpu
 ```
 
 ```
-you> Name three primary colours.
-  bf16      > The three primary colours are: 1. Red 2. Blue 3. Yellow
-  quantized > Here are three primary colors: 1. Red 2. Blue 3. Yellow ...
-  38% of tokens agree, first difference at token 0
-
 you> Why is the sky blue?
-  bf16      > ... a phenomenon called Rayleigh scattering, n
-  quantized > ... a phenomenon called scattering. When
-  16% of tokens agree, first difference at token 4
+bf16                                           | quantized
+-----------------------------------------------+-----------------------------------------------
+The sky appears blue to us because of a        | The sky appears blue to us during the day due
+phenomenon called Rayleigh scattering, named   | to a phenomenon called scattering. Scattering
+after the British physicist Lord Rayleigh, who | is the process by which light is scattered in
+first described it in the late 19th century.   | different directions by the presence of
+Here's what happens                            | particles or molecules in the air.
+-----------------------------------------------+-----------------------------------------------
+15% of tokens agree, first difference at token 6
 ```
 
 That is W4 on Llama-3.2-1B; W8 answers all three identically. Both decode greedily, so
