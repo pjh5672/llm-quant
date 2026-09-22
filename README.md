@@ -125,6 +125,23 @@ embedding. Decode does not care, because it reads `lm_head` in full every token 
 row-indexes the embedding. Hence disk +252 MB and decode traffic −237 MB/token at once.
 Stage 1 prints this before the sweep runs, so the next model does not repeat the confusion.
 
+### Where quantization does pay for itself
+
+The paragraph above is about a 1.2 GB dense model, where weight bandwidth is not the
+bottleneck. On a Mixture-of-Experts it is, and the same pipeline gets the win it is
+supposed to get — OLMoE-1B-7B-Instruct, medians of 5 runs:
+
+| | decode | peak VRAM |
+|---|---|---|
+| bf16 | 52.9 tok/s | 13.01 GB |
+| packed W4 MLP + W8 attention | **93.0 tok/s** | **7.51 GB** |
+
+That took a batched expert kernel — one launch for every hit expert instead of `top_k`
+launches of one row each — and a decode step that captures into a CUDA graph, which it
+could not do until a `torch.bincount` in the routing plan stopped reading its maximum back
+to the host. Prefill is 9x *worse*, and [supported models](docs/models.md) says why, along
+with the numbers behind all of this.
+
 ## Documentation
 
 | | |

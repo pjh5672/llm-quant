@@ -1,0 +1,36 @@
+{
+  "model": "allenai/OLMoE-1B-7B-0924-Instruct",
+  "prompt_tokens": 128,
+  "new_tokens": 48,
+  "packed": {
+    "decode_tps_median": 54.4,
+    "decode_tps_min": 48.3,
+    "decode_tps_max": 57.0,
+    "decode_spread": 0.159,
+    "ttft_ms_median": 516.5,
+    "peak_vram_gb": 6.8,
+    "repeats": 5
+  },
+  "packed_graph": {
+    "decode_tps_median": 93.0,
+    "decode_tps_min": 89.0,
+    "decode_tps_max": 96.9,
+    "decode_spread": 0.085,
+    "ttft_ms_median": 521.1,
+    "peak_vram_gb": 7.51,
+    "repeats": 5
+  },
+  "bf16": {
+    "decode_tps_median": 52.9,
+    "decode_tps_min": 52.4,
+    "decode_tps_max": 54.0,
+    "decode_spread": 0.03,
+    "ttft_ms_median": 56.8,
+    "peak_vram_gb": 13.01,
+    "repeats": 5
+  },
+  "bf16_graph": {
+    "captured": false,
+    "error": "RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU tensor is pinned. Please use tensor.pin_memory() or allocate the tensor with pin_memory=True."
+  }
+}

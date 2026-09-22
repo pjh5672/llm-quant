@@ -13,6 +13,9 @@ experiments/*
 !experiments/*/
 experiments/*/*
 !experiments/*/sweep.json
+# latency.json is the other one: a few hundred bytes holding the medians and spreads
+# behind the speed claims in the docs, which are worth nothing without them.
+!experiments/*/latency.json
 *.log
 csrc/*.exe
 csrc/*.exp
