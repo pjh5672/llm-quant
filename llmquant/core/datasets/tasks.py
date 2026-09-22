@@ -49,7 +49,10 @@ def get_arc(config, limit):
 
 
 def get_openbookqa(limit):
-    return _choice_examples(_take(load_dataset("openbookqa", "main", split="test"), limit), "question_stem")
+    # "allenai/openbookqa", not the bare "openbookqa": the bare name is a redirect the hub
+    # still serves but huggingface_hub no longer parses, so it resolves fine from a warm
+    # cache and raises HfUriError on a cold one. Same dataset either way.
+    return _choice_examples(_take(load_dataset("allenai/openbookqa", "main", split="test"), limit), "question_stem")
 
 
 def get_gsm8k(limit):
