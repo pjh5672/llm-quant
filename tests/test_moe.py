@@ -357,3 +357,42 @@ def test_the_batched_result_tracks_bf16():
         got = quant(hidden, index, weights).float()
         want = ref(hidden, index, weights).float()
     assert (got - want).abs().max() < want.abs().max() * 0.1
+
+
+def test_the_expert_block_can_be_captured_in_a_cuda_graph():
+    """torch.bincount reads its maximum back to the host to size the output, even with
+    minlength, and that one round trip was the only thing in the block a graph could not
+    capture. transformers' own MoE block still cannot be captured -- it loops in Python
+    over a .nonzero() -- so this is a property of the batched path, not of MoE."""
+    from transformers.models.mixtral.modeling_mixtral import MixtralExperts
+
+    ref, quant, cfg = _expert_block()
+    assert isinstance(ref, MixtralExperts)
+    hidden = torch.randn(1, cfg.hidden_size, device="cuda", dtype=torch.bfloat16)
+    index, weights = _routing(1, cfg.num_local_experts, cfg.num_experts_per_tok)
+
+    with torch.no_grad():
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(3):
+                quant(hidden, index, weights)
+        torch.cuda.current_stream().wait_stream(side)
+        torch.cuda.synchronize()
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            captured = quant(hidden, index, weights)
+        graph.replay()
+        torch.cuda.synchronize()
+    assert torch.isfinite(captured).all()
+
+
+def test_the_plan_needs_no_host_round_trip():
+    """Every tensor it produces stays on the device; reading one back is what broke
+    capture and what cost 0.432 ms of an 0.820 ms block before that."""
+    _, quant, cfg = _expert_block()
+    index, _ = _routing(4, cfg.num_local_experts, cfg.num_experts_per_tok)
+    order, plan = quant._plan(index)
+    assert order.is_cuda
+    assert all(part.is_cuda for part in plan)

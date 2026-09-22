@@ -188,7 +188,12 @@ class KernelQuantExperts(nn.Module):
         rows = top_k_index.numel()
         flat = top_k_index.reshape(-1)
         order = torch.argsort(flat, stable=True)
-        counts = torch.bincount(flat, minlength=self.num_experts)
+        # not torch.bincount: on CUDA it reads the maximum back to the host to size its
+        # output, even with minlength, and that host round trip is the one thing in this
+        # block a CUDA graph cannot capture. scatter_add_ into a fixed-size buffer is the
+        # same count with no synchronisation -- and the size is known, it is num_experts.
+        counts = torch.zeros(self.num_experts, dtype=torch.int64, device=flat.device)
+        counts.scatter_add_(0, flat, torch.ones_like(flat))
         starts = torch.cumsum(counts, 0) - counts
 
         # worst case: one expert takes every row. Slots beyond an expert's share carry zero
