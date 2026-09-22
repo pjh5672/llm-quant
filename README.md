@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://www.apache.org/licenses/LICENSE-2.0"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-334%20passing-brightgreen.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-343%20passing-brightgreen.svg">
 </p>
 
 <p align="center">

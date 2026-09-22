@@ -1,23 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="804" height="254" viewBox="0 0 804 254" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14">
 <rect width="804" height="254" rx="10" fill="#0d1117" stroke="#30363d"/>
-<text x="22.0" y="43" fill="#8b949e" font-weight="normal">$ chat.py --load-packed attn-int4_mlp-int4_head-int8_act-bf16_g128.bin --compare</text>
-<text x="22.0" y="64" fill="#e6edf3" font-weight="bold">you&gt; Why is the sky blue?</text>
-<text x="22.0" y="91" fill="#8b949e" font-weight="bold">bf16</text>
-<text x="414.0" y="91" fill="#8b949e" font-weight="bold">quantized  (W4)</text>
+<text x="22.0" y="43" xml:space="preserve"><tspan fill="#8b949e" font-weight="normal" textLength="640.0" lengthAdjust="spacingAndGlyphs">$ chat.py --load-packed attn-int4_mlp-int4_head-int8_act-bf16_g128.bin --compare</tspan></text>
+<text x="22.0" y="64" xml:space="preserve"><tspan fill="#e6edf3" font-weight="bold" textLength="200.0" lengthAdjust="spacingAndGlyphs">you&gt; Why is the sky blue?</tspan></text>
+<text x="22.0" y="91" xml:space="preserve"><tspan fill="#8b949e" font-weight="bold" textLength="32.0" lengthAdjust="spacingAndGlyphs">bf16</tspan></text>
+<text x="414.0" y="91" xml:space="preserve"><tspan fill="#8b949e" font-weight="bold" textLength="120.0" lengthAdjust="spacingAndGlyphs">quantized  (W4)</tspan></text>
 <line x1="22" y1="99" x2="782" y2="99" stroke="#30363d"/>
-<text x="22.0" y="120" fill="#7ee787" font-weight="normal">The sky appears blue to us</text>
-<text x="230.0" y="120" fill="#e6edf3" font-weight="normal"> because of a</text>
-<text x="414.0" y="120" fill="#7ee787" font-weight="normal">The sky appears blue to us</text>
-<text x="622.0" y="120" fill="#ffa657" font-weight="normal"> during the day due</text>
-<text x="22.0" y="141" fill="#e6edf3" font-weight="normal">phenomenon called Rayleigh scattering, named</text>
-<text x="414.0" y="141" fill="#ffa657" font-weight="normal">to a phenomenon called scattering. Scattering</text>
-<text x="22.0" y="162" fill="#e6edf3" font-weight="normal">after the British physicist Lord Rayleigh, who</text>
-<text x="414.0" y="162" fill="#ffa657" font-weight="normal">is the process by which light is scattered in</text>
-<text x="22.0" y="183" fill="#e6edf3" font-weight="normal">first described it in the late 19th century.</text>
-<text x="414.0" y="183" fill="#ffa657" font-weight="normal">different directions by the presence of</text>
-<text x="22.0" y="204" fill="#e6edf3" font-weight="normal">Here&#x27;s what happens</text>
-<text x="414.0" y="204" fill="#ffa657" font-weight="normal">particles or molecules in the air.</text>
+<text x="22.0" y="120" xml:space="preserve"><tspan fill="#7ee787" font-weight="normal" textLength="208.0" lengthAdjust="spacingAndGlyphs">The sky appears blue to us</tspan><tspan fill="#e6edf3" font-weight="normal" textLength="104.0" lengthAdjust="spacingAndGlyphs"> because of a</tspan></text>
+<text x="414.0" y="120" xml:space="preserve"><tspan fill="#7ee787" font-weight="normal" textLength="208.0" lengthAdjust="spacingAndGlyphs">The sky appears blue to us</tspan><tspan fill="#ffa657" font-weight="normal" textLength="152.0" lengthAdjust="spacingAndGlyphs"> during the day due</tspan></text>
+<text x="22.0" y="141" xml:space="preserve"><tspan fill="#e6edf3" font-weight="normal" textLength="352.0" lengthAdjust="spacingAndGlyphs">phenomenon called Rayleigh scattering, named</tspan></text>
+<text x="414.0" y="141" xml:space="preserve"><tspan fill="#ffa657" font-weight="normal" textLength="360.0" lengthAdjust="spacingAndGlyphs">to a phenomenon called scattering. Scattering</tspan></text>
+<text x="22.0" y="162" xml:space="preserve"><tspan fill="#e6edf3" font-weight="normal" textLength="368.0" lengthAdjust="spacingAndGlyphs">after the British physicist Lord Rayleigh, who</tspan></text>
+<text x="414.0" y="162" xml:space="preserve"><tspan fill="#ffa657" font-weight="normal" textLength="360.0" lengthAdjust="spacingAndGlyphs">is the process by which light is scattered in</tspan></text>
+<text x="22.0" y="183" xml:space="preserve"><tspan fill="#e6edf3" font-weight="normal" textLength="352.0" lengthAdjust="spacingAndGlyphs">first described it in the late 19th century.</tspan></text>
+<text x="414.0" y="183" xml:space="preserve"><tspan fill="#ffa657" font-weight="normal" textLength="312.0" lengthAdjust="spacingAndGlyphs">different directions by the presence of</tspan></text>
+<text x="22.0" y="204" xml:space="preserve"><tspan fill="#e6edf3" font-weight="normal" textLength="152.0" lengthAdjust="spacingAndGlyphs">Here&#x27;s what happens</tspan></text>
+<text x="414.0" y="204" xml:space="preserve"><tspan fill="#ffa657" font-weight="normal" textLength="272.0" lengthAdjust="spacingAndGlyphs">particles or molecules in the air.</tspan></text>
 <line x1="398.0" y1="87" x2="398.0" y2="210" stroke="#30363d"/>
 <line x1="22" y1="210" x2="782" y2="210" stroke="#30363d"/>
-<text x="22.0" y="229" fill="#ffa657" font-weight="normal">15% of tokens agree, first difference at token 6</text>
+<text x="22.0" y="229" xml:space="preserve"><tspan fill="#ffa657" font-weight="normal" textLength="384.0" lengthAdjust="spacingAndGlyphs">15% of tokens agree, first difference at token 6</tspan></text>
 </svg>

@@ -1,0 +1,7 @@
+{
+  "config": "attn-int4_mlp-int4_head-int8_act-bf16_g128",
+  "prompt": "Why is the sky blue?",
+  "reference": "The sky appears blue to us because of a phenomenon called Rayleigh scattering, named after the British physicist Lord Rayleigh, who first described it in the late 19th century. Here's what happens",
+  "candidate": "The sky appears blue to us during the day due to a phenomenon called scattering. Scattering is the process by which light is scattered in different directions by the presence of particles or molecules in the air.",
+  "verdict": "15% of tokens agree, first difference at token 6"
+}

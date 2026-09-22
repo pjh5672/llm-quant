@@ -7,7 +7,7 @@ python -m pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-334 tests. The ones that need a GPU skip themselves without CUDA, so a CPU-only checkout
+343 tests. The ones that need a GPU skip themselves without CUDA, so a CPU-only checkout
 still runs most of the suite. The CUDA kernels compile on first use — one to two minutes,
 cached after that. `NOTES.md` has the Windows toolchain setup if the build fails, including
 the one where `nvcc` exits silently because `%TMP%` contains a space.
