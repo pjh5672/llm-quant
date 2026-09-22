@@ -9,10 +9,10 @@ activations measure slower for the quant they add.
 
 import torch.nn as nn
 import torch.nn.functional as F
-from llmquant.core.scheme import QuantizationScheme
-from llmquant.core.quant_ops import fake_quantize
 from transformers.cache_utils import DynamicCache
-from llmquant.core.scheme import GROUP_SIZE, QuantizationArgs
+
+from llmquant.core.quant_ops import fake_quantize
+from llmquant.core.scheme import GROUP_SIZE, QuantizationArgs, QuantizationScheme
 
 
 class FakeQuantLinear(nn.Module):

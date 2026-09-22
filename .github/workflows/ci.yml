@@ -1,0 +1,22 @@
+name: CI
+
+# The GPU tests skip themselves without CUDA, so this runs the rest: the analysis, the
+# config parsing, the packing format, the routing plan. About two thirds of the suite.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" ruff
+      - run: python -m ruff check llmquant examples tests
+      - run: python -m pytest -q

@@ -18,6 +18,7 @@ from llmquant.packing.format import read_header, read_packed, write_packed
 from llmquant.packing.packing import pack_weight, unpack_weight
 from llmquant.quantizers.kernel import KernelQuantExperts, KernelQuantLinear
 
+
 def _args_to_dict(args: QuantizationArgs | None):
     if args is None:
         return None

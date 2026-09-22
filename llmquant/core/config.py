@@ -19,6 +19,7 @@ from llmquant.core.scheme import (
     QuantizationScheme,
 )
 
+
 @dataclass
 class ModelArgs:
     model_id: str = "meta-llama/Llama-3.2-1B-Instruct"

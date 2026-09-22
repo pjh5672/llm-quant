@@ -174,7 +174,7 @@ def parameter_split(model) -> dict:
 
     split = {}
     seen = set()
-    for name, param in stacked_expert_parameters(model):
+    for _, param in stacked_expert_parameters(model):
         split["experts"] = split.get("experts", 0) + param.numel()
         seen.add(id(param))
     for name, module in model.named_modules():

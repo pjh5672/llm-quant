@@ -64,8 +64,7 @@ def test_the_cublas_path_lands_exactly_where_fake_quant_does(name, linear):
     """Above the threshold the weight is dequantized to the activation dtype and handed to
     cuBLAS -- the same computation fake quant performs, so the two agree exactly. It is
     therefore no less precise than the path it replaces, and no more."""
-    from llmquant.quantizers import FakeQuantLinear
-    from llmquant.quantizers import KERNEL_MAX_ROWS, KernelQuantLinear
+    from llmquant.quantizers import KERNEL_MAX_ROWS, FakeQuantLinear, KernelQuantLinear
 
     scheme = LAYOUTS[name]
     torch.manual_seed(0)

@@ -526,7 +526,7 @@ TTFT를 48ms로 되돌리려면 약 1.0배, 즉 cuBLAS급이 필요하다.
 이 PC의 TMP는 `C:\Users\Park Jiho\AppData\Local\Temp`라 항상 걸렸다. 에러가 안 찍히니
 원인 파악이 안 됐던 것. `TMP`/`TEMP`를 8.3 단축 경로(`C:\Users\PARKJI~1\...`)로 바꾸면 해결됨.
 
-`llmquant/kernels/build.py`가 빌드 전에 자동으로 처리하는 것들:
+`llmquant/cuda/build.py`가 빌드 전에 자동으로 처리하는 것들:
 1. **MSVC 환경 주입** — `cl.exe`가 PATH에 없어서 `vcvarsall.bat`을 실행해 env를 가져옴.
    ⚠️ `subprocess`에 **리스트가 아니라 문자열**로 넘겨야 함. 리스트로 넘기면 `list2cmdline`이
    따옴표를 `\"`로 escape해서 cmd가 배치 파일을 못 찾는다. (`_short_path`도 같은 함정)
@@ -736,7 +736,7 @@ oneshot(model, recipe)
 `QuantizationModifier(scheme="W8A8")` 프리셋 경로도 그대로 동작함(모든 Linear에 같은 scheme).
 
 - `mode`는 현재 `"fake"`만 있음. Phase 2에서 `"real"`(`modules/real_quant_linear.py`), Phase 4에서 `"kernel"`(`modules/kernel_quant_linear.py`)을 추가.
-- 해당 Phase에서 추가할 것: `compression/`(packing, bin 형식), `kernels/`, `entrypoints/chat.py`, `examples/quantize_and_save.py`.
+- 해당 Phase에서 추가할 것: `compression/`(packing, bin 형식), `kernels/`, `entrypoints/chat.py`, `examples/run.py`.
 - **lm_head 동작**: `lm_head_scheme=None`이면 weight와 activation 모두 bf16 유지. bf16 weight에 int8 activation을 쓰는 커널은 이점이 없어서 초기 스크립트 동작에서 바꿈.
 - recipe(YAML), pipelines, calibration 흐름은 필요 없어서 가져오지 않음.
 
@@ -825,7 +825,7 @@ A8은 어떤 weight 조합 위에서도 **+0.07~0.16%p**만 낸다. int8 GEMM �
   조합이 크기 이득 대부분을 가져가면서 정확도를 지킬 수 있는지는 측정된 바 없다.
   구 sweep은 이걸 표현할 수 없었고, `configs/sweep.yaml`(16런)이 바로 이 영역을 덮는다.
 
-## sweep 분석 (`llmquant/analysis.py`)
+## sweep 분석 (`llmquant/eval/analysis.py`)
 
 sweep 결과를 받아 **bit 조합 결정에 필요한 비교**를 자동으로 만들어 낸다. 전부 순수 함수라
 저장된 `sweep.json`만 있으면 GPU도 모델도 없이 다시 돌릴 수 있다:
@@ -1268,7 +1268,7 @@ model> The capital of France is Paris, which is also the largest city in the cou
 
 ### 완료: quant-dequant 커널 (2026-09-18)
 
-`llmquant/kernels/csrc/fake_quant.cu` — fused symmetric RTN quant-dequant, 마지막 축 기준 group.
+`llmquant/cuda/csrc/fake_quant.cu` — fused symmetric RTN quant-dequant, 마지막 축 기준 group.
 
 - `fake_quantize_cuda(x, args, return_scale=False)` → PyTorch 레퍼런스와 **bit-exact** (`torch.equal`).
 - group 하나당 block 1개(128 thread), warp shuffle로 abs-max 리덕션 → scale → quant → dequant를 한 번에.

@@ -5,12 +5,13 @@ nothing at bf16 width is ever written or read back. Below a few rows the hand-wr
 runs; above it the weight is dequantized for cuBLAS, which is where prefill pays.
 """
 
+import torch
 import torch.nn as nn
+
 from llmquant.core.observers import group_view, pad_to_group
 from llmquant.core.scheme import QuantizationScheme
-from llmquant.quantizers.real import quantize_weight
 from llmquant.cuda.build import load_extension
-import torch
+from llmquant.quantizers.real import quantize_weight
 
 
 def pad_activation(flat, args):

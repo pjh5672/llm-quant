@@ -24,3 +24,19 @@ include = ["llmquant*"]
 [tool.setuptools.package-data]
 # the JIT build compiles these from the installed package
 llmquant = ["cuda/csrc/*.cu", "cuda/csrc/*.cpp"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# The default set plus import sorting. PLR0402 is off because `import torch.nn as nn` is
+# what every file here already uses and what the PyTorch docs write; rewriting 19 files to
+# satisfy it would churn more than it clarifies.
+select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
+ignore = ["E501", "PLR0402", "RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests import inside functions on purpose: the GPU-only ones must not import CUDA code at
+# collection time, or a CPU-only checkout fails before it can skip.
+"tests/*" = ["B008"]

@@ -23,9 +23,10 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a C
 def _config(**kw):
     from transformers import MixtralConfig
 
-    base = dict(hidden_size=256, intermediate_size=512, num_hidden_layers=2,
-                num_attention_heads=8, num_key_value_heads=4, vocab_size=1000,
-                num_local_experts=4, num_experts_per_tok=2, max_position_embeddings=512)
+    base = {"hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 2,
+            "num_attention_heads": 8, "num_key_value_heads": 4, "vocab_size": 1000,
+            "num_local_experts": 4, "num_experts_per_tok": 2,
+            "max_position_embeddings": 512}
     base.update(kw)
     return MixtralConfig(**base)
 
@@ -283,7 +284,7 @@ def test_the_batched_kernel_is_bit_exact_per_row_against_the_loop():
     """Row for row the two paths agree exactly. They can still differ once the rows are
     added back together, because index_add_ accumulates duplicate indices with atomics in
     no fixed order -- which the bf16 implementation does too."""
-    ref, quant, cfg = _expert_block()
+    _ref, quant, cfg = _expert_block()
     tokens = 4
     hidden = torch.randn(tokens, cfg.hidden_size, device="cuda", dtype=torch.bfloat16)
     index, _ = _routing(tokens, cfg.num_local_experts, cfg.num_experts_per_tok)
@@ -315,7 +316,7 @@ def test_a_block_never_straddles_two_experts():
 
     experts_of_row = index.reshape(-1)[order]
     for expert, row0, count in zip(block_expert.tolist(), block_row0.tolist(),
-                                   block_rows.tolist()):
+                                   block_rows.tolist(), strict=True):
         assert count <= quant._batched_max_rows
         if count:   # the plan pads every expert to the same number of slots
             assert (experts_of_row[row0:row0 + count] == expert).all()
@@ -327,7 +328,7 @@ def test_every_row_is_covered_exactly_once():
     _, (_, block_row0, block_rows) = quant._plan(index)
 
     covered = []
-    for row0, count in zip(block_row0.tolist(), block_rows.tolist()):
+    for row0, count in zip(block_row0.tolist(), block_rows.tolist(), strict=True):
         covered.extend(range(row0, row0 + count))   # empty slots contribute nothing
     assert sorted(covered) == list(range(index.numel()))
 
@@ -335,7 +336,7 @@ def test_every_row_is_covered_exactly_once():
 def test_wide_batches_fall_back_to_the_per_expert_path():
     """Above the row limit each block would reread the weight per row, so the batched
     kernel stops paying and cuBLAS runs instead."""
-    ref, quant, cfg = _expert_block(experts=2, top_k=2)
+    _ref, quant, cfg = _expert_block(experts=2, top_k=2)
     tokens = 64   # 64 tokens x top-2 over 2 experts is far past the limit
     hidden = torch.randn(tokens, cfg.hidden_size, device="cuda", dtype=torch.bfloat16)
     index, weights = _routing(tokens, cfg.num_local_experts, cfg.num_experts_per_tok)

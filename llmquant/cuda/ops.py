@@ -1,8 +1,8 @@
 import torch
 
-from llmquant.cuda.build import load_extension
 from llmquant.core.observers import pad_to_group
 from llmquant.core.scheme import QuantizationArgs
+from llmquant.cuda.build import load_extension
 
 
 def fake_quantize_cuda(x: torch.Tensor, args: QuantizationArgs, return_scale: bool = False):

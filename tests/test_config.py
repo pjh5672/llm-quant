@@ -1,8 +1,7 @@
 import pytest
 import torch.nn as nn
 
-from llmquant.core.config import QuantConfig
-from llmquant.core.config import BF16, dtype_to_args, normalize_dtype
+from llmquant.core.config import BF16, QuantConfig, dtype_to_args, normalize_dtype
 from llmquant.core.scheme import GROUP_SIZE
 from llmquant.quantizers import FakeQuantLinear
 

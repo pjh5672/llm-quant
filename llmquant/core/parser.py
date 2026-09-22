@@ -201,7 +201,7 @@ def expand_sweep(config: RunConfig) -> list[RunConfig]:
     keys = [k for k in _QUANT_KEYS if k in config.sweep]
     runs, seen = [], set()
     for combo in itertools.product(*(config.sweep[k] for k in keys)):
-        quant = replace(config.quant, **dict(zip(keys, combo)))
+        quant = replace(config.quant, **dict(zip(keys, combo, strict=True)))
         # the KV cache is not part of any weight scheme, so it has to join the key
         # explicitly or every cache dtype would collapse into one run
         key = (

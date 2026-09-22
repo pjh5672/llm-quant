@@ -31,9 +31,9 @@ from llmquant.quantizers.real import (
 
 __all__ = [
     "AVAILABLE_MODES",
+    "KERNEL_MAX_ROWS",
     "FakeQuantCache",
     "FakeQuantLinear",
-    "KERNEL_MAX_ROWS",
     "KernelQuantExperts",
     "KernelQuantLinear",
     "RealQuantExperts",

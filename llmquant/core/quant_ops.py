@@ -1,6 +1,5 @@
 import torch
 
-from llmquant.core.scheme import QuantizationArgs
 from llmquant.core.observers import (
     compute_scale,
     group_view,
@@ -8,6 +7,7 @@ from llmquant.core.observers import (
     out_unblock,
     ungroup,
 )
+from llmquant.core.scheme import QuantizationArgs
 
 
 def quantize(x: torch.Tensor, scale: torch.Tensor, args: QuantizationArgs) -> torch.Tensor:

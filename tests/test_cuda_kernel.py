@@ -9,9 +9,9 @@ import pytest
 import torch
 
 from llmquant.core import QuantizationArgs
-from llmquant.core.scheme import GROUP_SIZE
 from llmquant.core.observers import compute_scale
 from llmquant.core.quant_ops import fake_quantize
+from llmquant.core.scheme import GROUP_SIZE
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 

@@ -28,7 +28,6 @@ from llmquant.core.datasets import get_eval_ids, get_generation_task
 from llmquant.core.metrics import model_metrics
 from llmquant.core.model import load_pretrained
 from llmquant.core.oneshot import oneshot
-from llmquant.quantizers import make_cache_factory
 from llmquant.eval.evaluate import (
     evaluate_generation_task,
     evaluate_lambada,
@@ -37,6 +36,7 @@ from llmquant.eval.evaluate import (
     greedy_continuations,
     measure_latency,
 )
+from llmquant.quantizers import make_cache_factory
 
 GB = 1024**3
 
@@ -64,7 +64,7 @@ def _applied(config):
     """The dtype fields as actually applied; with quantize=False nothing was."""
     if config.quantize:
         return config.quant
-    return replace(config.quant, **{t: BF16 for t in (*WEIGHT_TARGETS, "activation")})
+    return replace(config.quant, **dict.fromkeys((*WEIGHT_TARGETS, "activation"), BF16))
 
 
 def run_one(config) -> dict:

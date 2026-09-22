@@ -129,7 +129,7 @@ def test_a_packed_model_holds_a_two_turn_conversation(tmp_path):
     del model
     torch.cuda.empty_cache()
 
-    loaded, tokenizer, cache_factory = load_for_chat(packed_path=path)
+    loaded, tokenizer, _cache_factory = load_for_chat(packed_path=path)
     chat = ChatSession(model=loaded, tokenizer=tokenizer, max_new_tokens=24)
     first = chat.ask("Name the capital of France in one word.")
     assert "paris" in first.lower()
@@ -220,5 +220,5 @@ def test_load_for_chat_accepts_a_config():
     config = build_config(
         ["--cfg", "configs/recommended.yaml", "--mode", "fake"], root_dir=Path(".")
     )
-    model, tokenizer, _ = load_for_chat(config=config)
+    model, tokenizer, _cache_factory = load_for_chat(config=config)
     assert model is not None and tokenizer is not None

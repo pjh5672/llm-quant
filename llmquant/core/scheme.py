@@ -56,4 +56,6 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
     try:
         return PRESET_SCHEMES[name.upper()]
     except KeyError:
-        raise ValueError(f"unknown scheme {name!r}, expected one of {list(PRESET_SCHEMES)}")
+        raise ValueError(
+            f"unknown scheme {name!r}, expected one of {list(PRESET_SCHEMES)}"
+        ) from None

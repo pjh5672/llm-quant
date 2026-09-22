@@ -1,5 +1,5 @@
-from llmquant.core.config import ModelArgs
 from llmquant.core import QuantizationModifier
+from llmquant.core.config import ModelArgs
 from llmquant.core.model import load_pretrained
 
 

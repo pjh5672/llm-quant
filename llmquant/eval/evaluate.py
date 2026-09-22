@@ -112,9 +112,9 @@ def generation_agreement(reference, candidate) -> dict:
         raise ValueError(f"{len(reference)} reference vs {len(candidate)} candidate continuations")
     matched = total = exact = 0
     divergence_fractions = []
-    for ref, cand in zip(reference, candidate):
+    for ref, cand in zip(reference, candidate, strict=True):
         n = min(len(ref), len(cand))
-        agree = [a == b for a, b in zip(ref[:n], cand[:n])]
+        agree = [a == b for a, b in zip(ref[:n], cand[:n], strict=True)]
         matched += sum(agree)
         total += max(len(ref), len(cand))
         first_bad = next((i for i, ok in enumerate(agree) if not ok), None)

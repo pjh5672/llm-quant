@@ -33,7 +33,7 @@ def _choice_examples(rows, question_key):
     out = []
     for row in rows:
         labels, texts = row["choices"]["label"], row["choices"]["text"]
-        options = "\n".join(f"{label}. {text}" for label, text in zip(labels, texts))
+        options = "\n".join(f"{label}. {text}" for label, text in zip(labels, texts, strict=False))
         out.append(
             {
                 "prompt": f"{row[question_key]}\n{options}\n\n{CHOICE_INSTRUCTION}",

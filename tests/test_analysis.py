@@ -150,7 +150,7 @@ def test_select_picks_the_best_score_inside_the_limit(grid):
     sel = summary["selection"]
     assert sel["best"]["name"] == "int8-int8-bf16-bf16"
     assert sel["n_within_limit"] == 1
-    assert [m["name"] for m in sel["near_misses"]][0] == "int4-int8-bf16-bf16"
+    assert next(m["name"] for m in sel["near_misses"]) == "int4-int8-bf16-bf16"
 
 
 def test_select_reports_nothing_when_the_limit_is_unreachable(grid):

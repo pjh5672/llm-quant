@@ -82,7 +82,7 @@ def test_the_cache_is_sized_for_the_calls_not_just_the_tokens():
     warmup and capture forwards consume slots. Sizing for tokens alone overran the cache."""
     from llmquant.core.config import ModelArgs
     from llmquant.core.model import load_pretrained
-    from llmquant.runtime import GraphedDecoder, WARMUP_CALLS
+    from llmquant.runtime import WARMUP_CALLS, GraphedDecoder
 
     model, _ = load_pretrained(ModelArgs())
     d = GraphedDecoder(model, prompt_tokens=8, new_tokens=4)
